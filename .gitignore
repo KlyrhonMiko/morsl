@@ -14,6 +14,10 @@ migrate_working_dir/
 
 # IntelliJ related
 *.iml
+ios/Flutter/Keys.xcconfig
+config.local.json
+android/.kotlin/
+android/build/
 *.ipr
 *.iws
 .idea/
