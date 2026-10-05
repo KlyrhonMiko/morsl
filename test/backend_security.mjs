@@ -42,7 +42,8 @@ try {
   await db.query('SELECT public.reserve_meal($1)',[M]);
   const original=`${M}/${asset}/original-digest.jpg`;
   await db.query('INSERT INTO storage.objects(bucket_id,name,owner_id) VALUES ($1,$2,$3)',['meal-images',original,A]);
-  const payload={id:M,scope:A,creator:A,assetId:asset,createdAt:'2026-10-05T12:00:00',original,cutout:null,thumbnail:null,
+  const plates=[{id:'plate-a',mask:'alpha-mask',left:.1,top:.2,width:.3,height:.4,x:.2,y:.15,scale:.6,rotation:.3}];
+  const payload={plates,platesEdited:true,id:M,scope:A,creator:A,assetId:asset,createdAt:'2026-10-05T12:00:00',original,cutout:null,thumbnail:null,
     venue:'Our own venue label',placeId:null,companions:['Jamie'],caption:'Creator caption',feeling:'cozy',bookmarked:true,draft:false,
     archived:false,useOriginal:true,background:'sage',layout:'classic',x:.1,y:0,scale:.9,rotation:0,latitude:14.55,longitude:121.02,
     accuracy:10,measuredAt:'2026-10-05T12:00:00',locationConfirmed:true,mealRevision:0,memoryRevision:0,demo:false};
@@ -50,6 +51,8 @@ try {
   const first=await save(payload);
   check(first.mealRevision===1 && first.memoryRevision===1,'first backup creates a single revision');
   await db.query('INSERT INTO storage.objects(bucket_id,name,owner_id) VALUES ($1,$2,$3)',['meal-images',`${M}/${asset}/old-cutout.png`,A]);
+  const own=(await rows('SELECT public.restore_memories() memory'))[0].memory;
+  check(own.plates[0].mask==='alpha-mask' && own.plates[0].rotation===.3,'plate masks and independent placement survive private backup');
   const replay=await save(payload);
   check(replay.mealRevision===1 && replay.memoryRevision===1,'interrupted acknowledgement retries idempotently');
   await rejected('SELECT public.save_memory($1::jsonb)',[JSON.stringify({...payload,caption:'Stale edit'})],/conflict/i,'stale revisions preserve the remote memory');
@@ -63,14 +66,17 @@ try {
   check((await rows('SELECT * FROM storage.objects')).length===1,'acceptance grants current private image access');
   check((await rows('SELECT * FROM storage.objects WHERE name LIKE $1',['%old-cutout%'])).length===0,'members cannot read unreferenced image versions');
   let shared=(await rows('SELECT public.restore_memories() memory'))[0].memory;
+  check(!shared.plates || shared.plates.length===0,'recipient does not receive creator personal plate edits');
   check(shared.caption==='' && shared.background==='cream','recipient begins with separate personal annotations');
-  const bPayload={...shared,caption:'Recipient caption',background:'rose',venue:'Attempted shared change',archived:true};
+  const bPayload={...shared,plates:[{...plates[0],id:'recipient-plate',rotation:-.5}],caption:'Recipient caption',background:'rose',venue:'Attempted shared change',archived:true};
   await save(bPayload);
   shared=(await rows('SELECT public.restore_memories() memory'))[0].memory;
   check(shared.caption==='Recipient caption' && shared.background==='rose','recipient can edit their own presentation');
+  check(shared.plates[0].id==='recipient-plate','recipient can back up their own plate mask without uploading creator assets');
   check(shared.venue==='Our own venue label','recipient cannot overwrite creator-managed meal details');
   await as(A);
   let creator=(await rows('SELECT public.restore_memories() memory'))[0].memory;
+  check(creator.plates[0].rotation===.3,'recipient plate edits do not alter creator plates');
   check(creator.caption==='Creator caption' && creator.archived===false,'recipient archive and annotation edits do not affect creator');
   await db.query('SELECT public.invite_to_meal($1,$2)',[M,'c@example.test']);
   await as(C);

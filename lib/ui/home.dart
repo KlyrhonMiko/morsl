@@ -63,8 +63,9 @@ class _MorslHomeState extends ConsumerState<MorslHome>
       'draft': m.draft,
       'demo': m.demo,
     });
-    Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => PlatingEditor(memory: m)));
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => PlatingEditor(memory: m)));
   }
 
   Future<void> capture() => showCapture(context, app, open);
@@ -84,7 +85,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                     Padding(
                       padding: EdgeInsets.symmetric(
                         horizontal: wide ? 40 : 22,
-                        vertical: 18,
+                        vertical: wide ? 18 : 10,
                       ),
                       child: Row(
                         children: [
@@ -361,8 +362,9 @@ class _MorslHomeState extends ConsumerState<MorslHome>
         ),
         const SizedBox(height: 22),
         InkWell(
-          onTap: () => Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
+          onTap: () => Navigator.of(
+            context,
+          ).push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
           child: Row(
             children: [
               Icon(
@@ -432,8 +434,10 @@ class _MorslHomeState extends ConsumerState<MorslHome>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Eyebrow('Little bites. Our little history.'),
-              const SizedBox(height: 14),
+              if (wide) ...[
+                const Eyebrow('Little bites. Our little history.'),
+                const SizedBox(height: 14),
+              ],
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -446,7 +450,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                               ? 'A few memories in the making.'
                               : 'Your life, one bite at a time.',
                           style: TextStyle(
-                            fontSize: wide ? 34 : 27,
+                            fontSize: wide ? 34 : 24,
                             fontWeight: FontWeight.w600,
                             letterSpacing: -1.2,
                             height: 1.25,
@@ -475,8 +479,9 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                   ],
                 ],
               ),
-              const SizedBox(height: 28),
-              if (!draft &&
+              const SizedBox(height: 20),
+              if (wide &&
+                  !draft &&
                   MediaQuery.textScalerOf(context).scale(1) < 1.5 &&
                   search.isEmpty &&
                   !onlyBookmarks &&
@@ -526,7 +531,9 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                     key: ValueKey(app.scope),
                     onChanged: (s) => setState(() => search = s),
                     decoration: InputDecoration(
-                      hintText: 'Find a meal, a place, a person…',
+                      hintText: c.maxWidth > 600
+                          ? 'Find a meal, place or person'
+                          : 'Find a meal or place',
                       prefixIcon: Icon(Icons.search_rounded, size: 19),
                       suffixIcon: c.maxWidth > 600
                           ? null
@@ -565,67 +572,62 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                 },
               ),
               const SizedBox(height: 15),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: [
-                    _filterChip(
-                      'All memories',
-                      !onlyBookmarks,
-                      () => setState(() => onlyBookmarks = false),
-                    ),
-                    const SizedBox(width: 8),
-                    if (dates != null) ...[
-                      InputChip(
-                        label: Text(
-                          '${DateFormat('MMM d').format(dates!.start)} – ${DateFormat('MMM d').format(dates!.end)}',
-                        ),
-                        onDeleted: () => setState(() => dates = null),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _filterChip(
+                    wide ? 'All memories' : 'All',
+                    !onlyBookmarks,
+                    () => setState(() => onlyBookmarks = false),
+                  ),
+                  if (dates != null) ...[
+                    InputChip(
+                      label: Text(
+                        '${DateFormat('MMM d').format(dates!.start)} – ${DateFormat('MMM d').format(dates!.end)}',
                       ),
-                      const SizedBox(width: 8),
-                    ],
-                    _filterChip(
-                      'Would go again',
-                      onlyBookmarks,
-                      () => setState(() => onlyBookmarks = !onlyBookmarks),
-                      icon: Icons.favorite_border,
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      height: 42,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Palette.line),
-                        borderRadius: BorderRadius.circular(24),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: people.contains(companion)
-                              ? companion
-                              : 'All people',
-                          icon: const Icon(Icons.keyboard_arrow_down, size: 17),
-                          style: const TextStyle(
-                            fontFamily: 'Quicksand',
-                            color: Palette.ink,
-                            fontSize: 12,
-                          ),
-                          items: people
-                              .map(
-                                (p) =>
-                                    DropdownMenuItem(value: p, child: Text(p)),
-                              )
-                              .toList(),
-                          onChanged: (v) => setState(() => companion = v!),
-                        ),
-                      ),
+                      onDeleted: () => setState(() => dates = null),
                     ),
                   ],
-                ),
+                  _filterChip(
+                    'Would go again',
+                    onlyBookmarks,
+                    () => setState(() => onlyBookmarks = !onlyBookmarks),
+                    icon: Icons.favorite_border,
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    constraints: const BoxConstraints(minHeight: 48),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Palette.line),
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: people.contains(companion)
+                            ? companion
+                            : 'All people',
+                        icon: const Icon(Icons.keyboard_arrow_down, size: 17),
+                        style: const TextStyle(
+                          fontFamily: 'Quicksand',
+                          color: Palette.ink,
+                          fontSize: 12,
+                        ),
+                        items: people
+                            .map(
+                              (p) => DropdownMenuItem(value: p, child: Text(p)),
+                            )
+                            .toList(),
+                        onChanged: (v) => setState(() => companion = v!),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 30),
+              const SizedBox(height: 24),
               Row(
                 children: [
-                  Flexible(
+                  Expanded(
                     child: Text(
                       draft ? 'Unfinished drafts' : month,
                       maxLines: 1,
@@ -636,20 +638,14 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 12),
                   Text(
                     '${items.length} ${items.length == 1 ? 'memory' : 'memories'}',
                     style: const TextStyle(fontSize: 11, color: Palette.muted),
                   ),
-                  const Spacer(),
-                  const Icon(
-                    Icons.grid_view_rounded,
-                    size: 17,
-                    color: Palette.muted,
-                  ),
                 ],
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               if (items.isEmpty)
                 EmptyState(
                   icon: draft ? Icons.inbox_outlined : Icons.menu_book_outlined,
@@ -864,26 +860,11 @@ class _MorslHomeState extends ConsumerState<MorslHome>
           child: Stack(
             children: [
               Positioned.fill(
-                child: Image.asset(
-                  'assets/images/shared-table.jpg',
-                  fit: BoxFit.cover,
-                ),
-              ),
-              Positioned(
-                bottom: 12,
-                right: 12,
-                child: Transform.rotate(
-                  angle: -.05,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 5,
-                    ),
-                    color: Palette.paper,
-                    child: Handwriting(
-                      wide ? 'stay a little longer' : 'stay awhile',
-                      size: wide ? 21 : 19,
-                    ),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Image.asset(
+                    'assets/images/salad-cutout.png',
+                    fit: BoxFit.contain,
                   ),
                 ),
               ),

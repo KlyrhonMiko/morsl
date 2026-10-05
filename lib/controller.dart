@@ -15,6 +15,7 @@ import 'data/models.dart';
 import 'data/repository.dart';
 import 'services/cloud.dart';
 import 'services/media.dart';
+import 'services/plates.dart';
 import 'services/reminders.dart';
 
 final appProvider = Provider<MorslController>(
@@ -71,6 +72,9 @@ class MorslController extends ChangeNotifier {
       await _seed();
       await repository.setPreference('seeded', 'true');
     }
+    if (seedExamples) {
+      await _upgradeExampleCutouts();
+    }
     await reload();
     reminderEnabled = await repository.preference('reminders:$scope') == 'true';
     final time = (await repository.preference('reminderTime:$scope') ?? '20:0')
@@ -89,7 +93,8 @@ class MorslController extends ChangeNotifier {
       });
       await _schedule();
     } catch (e) {
-      notice = 'Reminders are unavailable on this device. Your drafts are always here.';
+      notice =
+          'Reminders are unavailable on this device. Your drafts are always here.';
     }
     _auth = cloud.client?.auth.onAuthStateChange.listen(
       (_) => unawaited(_accountChanged()),
@@ -177,6 +182,7 @@ class MorslController extends ChangeNotifier {
       creator: cloud.account,
       createdAt: DateTime.now(),
       original: original,
+      useOriginal: false,
     );
     // The first database commit precedes all optional work.
     await repository.save(m);
@@ -279,7 +285,9 @@ class MorslController extends ChangeNotifier {
     notifyListeners();
     try {
       modelReady = await engine.prepare();
-      notice = modelReady ? 'Cutout model ready for offline meals.' : 'Model unavailable. Compose with your original and retry on a supported device.';
+      notice = modelReady
+          ? 'Cutout model ready for offline meals.'
+          : 'Model unavailable. Compose with your original and retry on a supported device.';
     } catch (e) {
       notice = e.toString();
     }
@@ -314,18 +322,42 @@ class MorslController extends ChangeNotifier {
         await reload();
         final watch = Stopwatch()..start();
         String? output, error;
+        List<Plate>? plates;
         try {
           final dir = await media.directory(m.scope, m.id);
-          output = await engine.process(
-            m.original,
-            p.join(dir.path, 'cutout.png'),
-          );
+          if (engine case MultiSubjectSegmentationEngine multi) {
+            plates = await multi.subjects(m.original, dir.path);
+            if (plates.isEmpty) {
+              error = 'No separate plates found. Select a plate to cut it out.';
+            }
+          } else {
+            output = await engine.process(
+              m.original,
+              p.join(dir.path, 'cutout.png'),
+            );
+          }
         } catch (e) {
           error = e.toString();
         }
         watch.stop();
         final current = await repository.mutate(m.id, m.scope, (current) {
-          current.job = output == null ? JobStatus.failed : JobStatus.ready;
+          // Select the first successful cutout, while preserving a photo choice
+          // made during processing and any choice made before a later retry.
+          if ((output != null || plates?.isNotEmpty == true) &&
+              current.cutout == null &&
+              current.plates.isEmpty &&
+              !current.platesEdited &&
+              current.useOriginal == m.useOriginal) {
+            current.useOriginal = false;
+          }
+          if (plates?.isNotEmpty == true &&
+              !current.platesEdited &&
+              current.plates.isEmpty) {
+            current.plates = plates!;
+          }
+          current.job = output != null || current.plates.isNotEmpty
+              ? JobStatus.ready
+              : JobStatus.failed;
           current.cutout = output ?? current.cutout;
           current.error = error;
           current.durationMs = watch.elapsedMilliseconds;
@@ -445,15 +477,15 @@ class MorslController extends ChangeNotifier {
           if (scope != account) {
             break;
           }
-          final current = (await repository.list(account))
-              .where((m) => m.id == op.entity)
-              .firstOrNull;
+          final current = (await repository.list(
+            account,
+          )).where((m) => m.id == op.entity).firstOrNull;
           if (current != null) {
             current.mealRevision = remote['mealRevision'];
             current.memoryRevision = remote['memoryRevision'];
-            final latest = (await repository.pending(account))
-                .where((q) => q.entity == op.entity)
-                .firstOrNull;
+            final latest = (await repository.pending(
+              account,
+            )).where((q) => q.entity == op.entity).firstOrNull;
             await repository.save(current, enqueue: latest?.id != op.id);
           }
           await repository.complete(op);
@@ -469,12 +501,12 @@ class MorslController extends ChangeNotifier {
       }
       if (scope == account) {
         final restored = await cloud.pull(account);
-        final pending = (await repository.pending(account))
-            .map((e) => e.entity)
-            .toSet();
-        final localIds = (await repository.list(account))
-            .map((m) => m.id)
-            .toSet();
+        final pending = (await repository.pending(
+          account,
+        )).map((e) => e.entity).toSet();
+        final localIds = (await repository.list(
+          account,
+        )).map((m) => m.id).toSet();
         for (final m in restored) {
           if (scope != account) {
             break;
@@ -511,9 +543,9 @@ class MorslController extends ChangeNotifier {
       return;
     }
     final account = scope;
-    final guests = (await repository.list('guest'))
-        .where((m) => !m.demo)
-        .toList();
+    final guests = (await repository.list(
+      'guest',
+    )).where((m) => !m.demo).toList();
     for (final m in guests) {
       if (scope != account) {
         throw StateError(
@@ -543,6 +575,11 @@ class MorslController extends ChangeNotifier {
             moved.thumbnail = target;
         }
       }
+      moved.plates = await Future.wait(
+        moved.plates.map(
+          (plate) => renderPlate(moved.original, dir.path, plate),
+        ),
+      );
       await repository.db.transaction(() async {
         await repository.save(moved);
         await repository.remove(m.id, 'guest');
@@ -598,6 +635,7 @@ class MorslController extends ChangeNotifier {
       m.original,
       m.cutout,
       m.thumbnail,
+      ...m.plates.map((plate) => plate.path),
     }.whereType<String>().where((path) => path.isNotEmpty)) {
       final provider = FileImage(File(path));
       await provider.evict();
@@ -661,11 +699,18 @@ class MorslController extends ChangeNotifier {
       final s = samples[i];
       final id = const Uuid().v4();
       final photo = await media.sample('assets/images/${s.$1}', id);
+      final cutout = await media.sample(
+        'assets/images/${s.$1.replaceAll('.jpg', '-cutout.png')}',
+        id,
+        filename: 'cutout.png',
+      );
       final m = Memory(
         id: id,
         scope: 'guest',
         createdAt: now.subtract(Duration(days: s.$6)),
         original: photo,
+        cutout: cutout,
+        useOriginal: false,
         caption: s.$2,
         venue: s.$3,
         companions: s.$4,
@@ -673,7 +718,7 @@ class MorslController extends ChangeNotifier {
         draft: false,
         demo: true,
         bookmarked: s.$7,
-        job: JobStatus.failed,
+        job: JobStatus.ready,
         latitude: 14.5547 + i * .004,
         longitude: 121.0244 + i * .003,
         locationConfirmed: true,
@@ -698,6 +743,32 @@ class MorslController extends ChangeNotifier {
       ),
       enqueue: false,
     );
+  }
+
+  Future<void> _upgradeExampleCutouts() async {
+    if (await repository.preference('exampleCutouts:v1') == 'true') return;
+    // Upgrade only the bundled examples still present in this scrapbook.
+    // Clearing examples stays permanent; real meals and their edits stay intact.
+    const assets = {
+      'Wildflour Café': 'salad',
+      'A Mano': 'pasta',
+      'Gino’s Brick Oven Pizza': 'pizza',
+      'Toby’s Estate': 'pastry',
+    };
+    for (final m in await repository.list('guest')) {
+      final asset = assets[m.venue];
+      if (!m.demo || m.draft || m.cutout != null || asset == null) continue;
+      m.cutout = await media.sample(
+        'assets/images/$asset-cutout.png',
+        m.id,
+        filename: 'cutout.png',
+      );
+      m.useOriginal = false;
+      m.job = JobStatus.ready;
+      m.error = null;
+      await repository.save(m, enqueue: false);
+    }
+    await repository.setPreference('exampleCutouts:v1', 'true');
   }
 
   @override

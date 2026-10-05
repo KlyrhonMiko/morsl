@@ -2,6 +2,57 @@ import 'dart:convert';
 
 enum JobStatus { queued, processing, ready, failed }
 
+/// An alpha mask over a region of the unchanged original, and its placement.
+/// Only the mask and normalized coordinates travel in backup, never local paths.
+class Plate {
+  Plate({
+    required this.id,
+    required this.mask,
+    this.path = '',
+    this.left = 0,
+    this.top = 0,
+    this.width = 1,
+    this.height = 1,
+    this.aspect = 1,
+    this.x = .2,
+    this.y = .15,
+    this.scale = .6,
+    this.rotation = 0,
+  });
+  final String id;
+  String mask, path;
+  double left, top, width, height, aspect, x, y, scale, rotation;
+  Map<String, dynamic> toJson({bool local = true}) => {
+    'id': id,
+    'mask': mask,
+    if (local) 'path': path,
+    'left': left,
+    'top': top,
+    'width': width,
+    'height': height,
+    'aspect': aspect,
+    'x': x,
+    'y': y,
+    'scale': scale,
+    'rotation': rotation,
+  };
+  Plate copy() => Plate.fromJson(toJson());
+  factory Plate.fromJson(Map<String, dynamic> j) => Plate(
+    id: j['id'],
+    mask: j['mask'],
+    path: j['path'] ?? '',
+    left: (j['left'] as num?)?.toDouble() ?? 0,
+    top: (j['top'] as num?)?.toDouble() ?? 0,
+    width: (j['width'] as num?)?.toDouble() ?? 1,
+    height: (j['height'] as num?)?.toDouble() ?? 1,
+    aspect: (j['aspect'] as num?)?.toDouble() ?? 1,
+    x: (j['x'] as num?)?.toDouble() ?? .2,
+    y: (j['y'] as num?)?.toDouble() ?? .15,
+    scale: (j['scale'] as num?)?.toDouble() ?? .6,
+    rotation: (j['rotation'] as num?)?.toDouble() ?? 0,
+  );
+}
+
 class Memory {
   Memory({
     required this.id,
@@ -10,6 +61,8 @@ class Memory {
     required this.original,
     this.thumbnail,
     this.cutout,
+    this.plates = const [],
+    this.platesEdited = false,
     this.creator,
     this.assetId,
     this.venue = '',
@@ -51,6 +104,8 @@ class Memory {
   DateTime createdAt;
   String original;
   String? thumbnail, cutout;
+  List<Plate> plates;
+  bool platesEdited;
   String venue, caption, feeling, background, layout;
   String? placeId;
   List<String> companions;
@@ -66,7 +121,10 @@ class Memory {
   bool get hasLocation =>
       locationConfirmed && latitude != null && longitude != null;
   bool get ownsMeal => creator == null || creator == scope;
-  String get displayPath => !useOriginal && cutout != null ? cutout! : original;
+  bool get displaysCutout =>
+      !useOriginal && (plates.isNotEmpty || cutout?.isNotEmpty == true);
+  String get displayPath =>
+      displaysCutout ? (plates.firstOrNull?.path ?? cutout!) : original;
   String get title => caption.isNotEmpty
       ? caption
       : venue.isNotEmpty
@@ -82,6 +140,8 @@ class Memory {
     'original': original,
     'thumbnail': thumbnail,
     'cutout': cutout,
+    'plates': plates.map((plate) => plate.toJson()).toList(),
+    'platesEdited': platesEdited,
     'venue': venue,
     'placeId': placeId,
     'caption': caption,
@@ -124,6 +184,10 @@ class Memory {
     original: j['original'],
     thumbnail: j['thumbnail'],
     cutout: j['cutout'],
+    plates: (j['plates'] as List? ?? [])
+        .map((p) => Plate.fromJson(Map<String, dynamic>.from(p)))
+        .toList(),
+    platesEdited: j['platesEdited'] ?? false,
     venue: j['venue'] ?? '',
     placeId: j['placeId'],
     caption: j['caption'] ?? '',

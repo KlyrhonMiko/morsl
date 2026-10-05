@@ -14,6 +14,7 @@ import 'package:morsl/data/repository.dart';
 import 'package:morsl/main.dart';
 import 'package:morsl/services/cloud.dart';
 import 'package:morsl/services/media.dart';
+import 'package:morsl/services/plates.dart';
 import 'package:morsl/services/reminders.dart';
 import 'package:morsl/ui/editor.dart';
 import 'package:morsl/ui/theme.dart';
@@ -24,6 +25,26 @@ class SwitchingCloud extends CloudService {
   String? current;
   @override
   String? get account => current;
+}
+
+class AutomaticDishEngine extends NativeSegmentation {
+  AutomaticDishEngine(this.path);
+  final String path;
+  @override
+  Future<List<Plate>> subjects(
+    String original,
+    String directory, {
+    Plate? region,
+  }) async => List.generate(
+    4,
+    (i) => Plate(id: 'dish-$i', path: path, mask: solidPlateMask()),
+  );
+}
+
+class TestDishMedia extends MediaStore {
+  @override
+  Future<Directory> directory(String scope, String id) async =>
+      Directory.current;
 }
 
 void main() {
@@ -56,6 +77,8 @@ void main() {
         scope: 'guest',
         createdAt: DateTime(2026, 10, 4),
         original: File('assets/images/salad.jpg').absolute.path,
+        cutout: File('assets/images/salad-cutout.png').absolute.path,
+        useOriginal: false,
         caption: 'The kind of lunch that turns into dinner.',
         venue: 'Wildflour Café',
         companions: ['Jamie', 'Alex'],
@@ -63,13 +86,15 @@ void main() {
         draft: false,
         demo: true,
         bookmarked: true,
-        job: JobStatus.failed,
+        job: JobStatus.ready,
       ),
       Memory(
         id: 'b',
         scope: 'guest',
         createdAt: DateTime(2026, 10, 2),
         original: File('assets/images/pasta.jpg').absolute.path,
+        cutout: File('assets/images/pasta-cutout.png').absolute.path,
+        useOriginal: false,
         caption: 'A little pasta, a lot of catching up.',
         venue: 'A Mano',
         companions: ['Jamie'],
@@ -78,20 +103,22 @@ void main() {
         draft: false,
         demo: true,
         bookmarked: true,
-        job: JobStatus.failed,
+        job: JobStatus.ready,
       ),
       Memory(
         id: 'c',
         scope: 'guest',
         createdAt: DateTime(2026, 9, 30),
         original: File('assets/images/pizza.jpg').absolute.path,
+        cutout: File('assets/images/pizza-cutout.png').absolute.path,
+        useOriginal: false,
         caption: 'One more slice. Always.',
         venue: 'Gino’s Brick Oven Pizza',
         companions: ['Alex', 'Sam'],
         background: 'rose',
         draft: false,
         demo: true,
-        job: JobStatus.failed,
+        job: JobStatus.ready,
       ),
     ];
   });
@@ -134,7 +161,11 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    final memory = app.memories.first.copy()..draft = true;
+    final memory = app.memories.first.copy()
+      ..draft = true
+      ..cutout = null
+      ..job = JobStatus.failed
+      ..useOriginal = true;
     await tester.runAsync(() => app.repository.save(memory));
     await tester.pumpWidget(
       host(
@@ -203,6 +234,127 @@ void main() {
       });
     },
   );
+  testWidgets('removing one plate preserves the other plate and autosaves', (
+    tester,
+  ) async {
+    final memory = app.memories.first.copy()
+      ..plates = [
+        Plate(
+          id: 'one',
+          mask: solidPlateMask(),
+          path: app.memories.first.cutout!,
+          x: .1,
+        ),
+        Plate(
+          id: 'two',
+          mask: solidPlateMask(),
+          path: app.memories.first.cutout!,
+          x: .6,
+          rotation: .4,
+        ),
+      ]
+      ..useOriginal = false;
+    await tester.runAsync(() => app.repository.save(memory));
+    await tester.pumpWidget(
+      host(
+        MaterialApp(
+          theme: morslTheme(),
+          home: PlatingEditor(memory: memory),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Plate 1'));
+    await tester.tap(find.text('Plate 1'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Remove plate'));
+    await tester.tap(find.text('Remove plate'));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+    });
+    await tester.pumpAndSettle();
+    final saved = (await tester.runAsync(
+      () => app.repository.list('guest'),
+    ))!.single;
+    expect(saved.plates.single.id, 'two');
+    expect(saved.plates.single.x, .6);
+    expect(saved.plates.single.rotation, .4);
+    expect(saved.platesEdited, true);
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets(
+    'automatic separation replaces a merged cutout and supports undo',
+    (tester) async {
+      final memory = app.memories.first.copy()
+        ..plates = [
+          Plate(
+            id: 'merged',
+            path: app.memories.first.cutout!,
+            mask: solidPlateMask(),
+            x: .37,
+          ),
+        ]
+        ..useOriginal = false;
+      app.dispose();
+      final media = TestDishMedia();
+      app = MorslController(
+        repository: MemoryRepository(db),
+        media: media,
+        engine: AutomaticDishEngine(memory.cutout!),
+        cloud: SwitchingCloud(null, media),
+        reminders: DraftReminders(),
+      )..memories = [memory];
+      await tester.runAsync(() => app.repository.save(memory));
+      await tester.pumpWidget(
+        host(
+          MaterialApp(
+            theme: morslTheme(),
+            home: PlatingEditor(memory: memory),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Separate dishes'));
+      await tester.tap(find.text('Separate dishes'));
+      await tester.pump();
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 250)),
+      );
+      await tester.pumpAndSettle();
+      var saved = (await tester.runAsync(
+        () => app.repository.list('guest'),
+      ))!.single;
+      expect(saved.plates.map((p) => p.id), [
+        'dish-0',
+        'dish-1',
+        'dish-2',
+        'dish-3',
+      ]);
+      expect(find.text('Review plates'), findsNothing);
+      expect(find.text('4 dishes separated'), findsOneWidget);
+      await tester.tap(find.text('Undo'));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 200)),
+      );
+      await tester.pumpAndSettle();
+      saved = (await tester.runAsync(
+        () => app.repository.list('guest'),
+      ))!.single;
+      expect(saved.plates.single.id, 'merged');
+      expect(saved.plates.single.x, .37);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets('switching accounts hides an already open private memory', (
     tester,
   ) async {
@@ -268,10 +420,10 @@ void main() {
     final memory = app.memories.first.copy()..draft = true;
     await tester.runAsync(() async {
       await app.repository.save(memory);
-      final provider = FileImage(File(memory.original));
+      final provider = FileImage(File(memory.displayPath));
       final cacheKey = await provider.obtainKey(const ImageConfiguration());
       final codec = await ui.instantiateImageCodec(
-        await File(memory.original).readAsBytes(),
+        await File(memory.displayPath).readAsBytes(),
         targetWidth: 900,
       );
       final frame = await codec.getNextFrame();
@@ -303,9 +455,10 @@ void main() {
           key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
       final image = await boundary.toImage();
       final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-      await Directory('docs/previews').create(recursive: true);
-      await File('docs/previews/plating-1200.png')
-          .writeAsBytes(bytes!.buffer.asUint8List());
+      await Directory('output/previews').create(recursive: true);
+      await File(
+        'output/previews/plating-1200.png',
+      ).writeAsBytes(bytes!.buffer.asUint8List());
     });
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() async {
@@ -337,13 +490,13 @@ void main() {
             final provider = ResizeImage.resizeIfNeeded(
               700,
               null,
-              FileImage(File(m.original)),
+              FileImage(File(m.displayPath)),
             );
             final cacheKey = await provider.obtainKey(
               const ImageConfiguration(),
             );
             final codec = await ui.instantiateImageCodec(
-              await File(m.original).readAsBytes(),
+              await File(m.displayPath).readAsBytes(),
               targetWidth: 700,
             );
             final frame = await codec.getNextFrame();
@@ -370,9 +523,12 @@ void main() {
         await tester.runAsync(() async {
           final image = await boundary.toImage(pixelRatio: 1);
           final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-          final dir = await Directory('docs/previews').create(recursive: true);
-          await File('${dir.path}/history-${size.width.toInt()}.png')
-              .writeAsBytes(bytes!.buffer.asUint8List());
+          final dir = await Directory(
+            'output/previews',
+          ).create(recursive: true);
+          await File(
+            '${dir.path}/history-${size.width.toInt()}.png',
+          ).writeAsBytes(bytes!.buffer.asUint8List());
         });
       },
     );

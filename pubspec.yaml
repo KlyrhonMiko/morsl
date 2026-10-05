@@ -3,7 +3,7 @@ description: Little bites. Our little history. A local-first meal scrapbook.
 publish_to: none
 version: 0.1.0+1
 environment:
-  sdk: ^3.13.5
+  sdk: ^3.12.0
 dependencies:
   flutter:
     sdk: flutter
@@ -15,7 +15,6 @@ dependencies:
   uuid: ^4.5.3
   image_picker: ^1.2.1
   image: ^4.8.0
-  native_cutout: ^0.4.0
   geolocator: ^14.0.2
   google_maps_flutter: ^2.14.0
   supabase_flutter: ^2.12.0

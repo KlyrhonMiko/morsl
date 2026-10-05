@@ -13,18 +13,31 @@ flutter pub get
 flutter run -d <your-android-device-id>
 ```
 
-Open Settings → Beta notebook → **Prepare model online** before testing cutouts
-offline. Android downloads the model through Google Play services. Extraction on
-iOS requires a physical iOS 17+ device; older supported devices keep using the
-original photo. The app processes one photo as one subject composition.
+Open Settings → Beta notebook → **Download dish models · 249 MB** once before
+using automatic cutouts offline. Android downloads pinned, SHA-256 verified
+Grounding DINO Tiny and MobileSAM models. Detection finds dishes across the photo;
+each detected dish gets its own transparent mask and independent placement.
+New imports run this automatically. For older merged results, **Separate dishes**
+in Plating replaces the current cutouts in one step. It can reset existing plate
+positions and edge edits, so use it when you want to regenerate them.
+
+This workflow targets Android only. All inference runs on the phone; model
+preparation only downloads public weights and never sends a photo. Processing
+can take tens of seconds depending on the phone. Recognition is not guaranteed
+for every photo, and parts outside the photo or behind another dish cannot be
+reconstructed. Optional **Select a plate** and **Edit edges** tools remain for
+corrections. See [model notices](THIRD_PARTY_MODELS.md) for provenance/licenses.
 
 First launch includes clearly labeled example memories and an example draft.
+Saved examples include bundled transparent food cutouts from their source photos;
+existing examples are upgraded in place. Newly captured meals automatically show
+their first successful cutout, and an explicit original-photo choice is preserved.
 They stay local, never upload, and can be cleared in Settings. Camera and import
 create real meals. Windows has an import/editor fallback; its runner requires
 Visual Studio's C++ workload. This project is a native mobile app, not a web app.
 
 The test APK is `build/app/outputs/flutter-apk/app-debug.apk`.
-Rendered UI previews are in `docs/previews/`.
+Rendered UI previews are in `output/previews/`.
 
 ## Connect backup, invitations, and maps
 
@@ -37,7 +50,7 @@ Rendered UI previews are in `docs/previews/`.
    `supabase secrets set GOOGLE_PLACES_API_KEY=<server-key>` then
    `supabase functions deploy nearby-venues`. The function validates the caller
    with Supabase Auth. Configure quotas and key restrictions in Google Cloud.
-4. Enable Maps SDK for Android and/or iOS and Places API (New). Restrict mobile
+4. Enable Maps SDK for Android and Places API (New). Restrict mobile
    Maps keys to your final bundle/package IDs and signing certificates. This
    starter uses `com.example.morsl`; choose your production IDs before publishing.
 5. Copy `config.example.json` to gitignored `config.local.json` and fill in the
@@ -45,11 +58,7 @@ Rendered UI previews are in `docs/previews/`.
    Supabase service-role key or a server Places key in the app.
 6. Run `flutter run --dart-define-from-file=config.local.json`. Android reads the
    Maps key from the same defines and supplies it to its manifest.
-7. For iOS, on a Mac, copy `ios/Flutter/Keys.xcconfig.example` to
-   `ios/Flutter/Keys.xcconfig` with the iOS Maps key too. Run `flutter pub get`,
-   then `pod install` in `ios`, configure signing in Xcode, and run on a phone.
-   Pod configuration bypasses always-on location permission; GPS is opt-in and
-   used only while capturing. iOS compilation is not verified on Windows.
+
 
 No keys are checked in. Without service configuration, capture, durable drafts,
 cutout fallback, editing, local History, evaluation, and notification settings
@@ -63,6 +72,9 @@ cloud actions explain their configuration state instead of pretending success.
 - Original photos in application documents, never large SQLite image blobs.
   Thumbnails are generated away from the UI thread. Imports use available EXIF
   capture dates/GPS and offer correction. Lost Android picker results are recovered.
+- Separate plate masks, normalized source regions, independent placement, and
+  content-addressed local PNGs. Backups preserve masks and rebuild the plate
+  images from the original; existing single-cutout memories remain compatible.
 - Native cutout adapter: availability, explicit preparation, processing, typed
   failure handling. Successful cache outputs are copied to durable storage.
   Interrupted jobs return to the queue at launch; originals remain editable.
@@ -109,7 +121,7 @@ node test/backend_security.mjs
 
 This validates the migration and authorization/revision logic locally; it does
 not replace real Supabase Auth, Storage HTTP access, or two-account device tests.
-See `docs/beta-verification.md` for the physical-device journey and release gates.
+Physical-device cutout quality and live two-account service verification remain release gates.
 
 ## Scope and operational notes
 
@@ -126,7 +138,7 @@ deleted meals. Configure server-side venue quotas/rate limits and the project's
 privacy policy/terms URL. The APK uses debug signing and is for beta testing;
 store distribution needs your signing configuration.
 
-Technical references: [native_cutout](https://pub.dev/packages/native_cutout),
+Technical references: [offline model provenance](THIRD_PARTY_MODELS.md),
 [Places policies](https://developers.google.com/maps/documentation/places/web-service/policies),
 [Supabase database RLS](https://supabase.com/docs/guides/database/postgres/row-level-security),
 [Storage access](https://supabase.com/docs/guides/storage/security/access-control).

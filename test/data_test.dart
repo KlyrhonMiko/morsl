@@ -11,6 +11,7 @@ import 'package:morsl/data/models.dart';
 import 'package:morsl/data/repository.dart';
 import 'package:morsl/services/cloud.dart';
 import 'package:morsl/services/media.dart';
+import 'package:morsl/services/plates.dart';
 import 'package:morsl/services/reminders.dart';
 
 class FakeEngine implements SegmentationEngine {
@@ -30,6 +31,20 @@ class FakeEngine implements SegmentationEngine {
     if (fails) throw StateError('No model available offline');
     await File(original).copy(output);
     return output;
+  }
+}
+
+class FakePlateEngine extends FakeEngine
+    implements MultiSubjectSegmentationEngine {
+  @override
+  Future<List<Plate>> subjects(
+    String original,
+    String directory, {
+    Plate? region,
+  }) async {
+    if (!started.isCompleted) started.complete();
+    if (wait != null) await wait!.future;
+    return [Plate(id: 'detected', mask: solidPlateMask(), path: original)];
   }
 }
 
@@ -173,12 +188,84 @@ void main() {
     await processing;
     final restored = (await repo.list('guest')).single;
     expect(restored.job, JobStatus.ready);
+    expect(restored.useOriginal, false);
+    expect(restored.displayPath, restored.cutout);
     expect(await File(restored.cutout!).exists(), true);
     expect(restored.caption, 'While it was processing');
     expect(restored.scale, .68);
     expect(restored.draft, false);
     app.dispose();
   });
+  test(
+    'an original selected during extraction survives completion and retry',
+    () async {
+      await File('${temp.path}/original.jpg').writeAsBytes([1, 2, 3]);
+      final m = meal('guest')..useOriginal = false;
+      await repo.save(m);
+      final engine = FakeEngine()
+        ..fails = false
+        ..wait = Completer<void>();
+      final app = controller(engine, CloudService(null, media));
+      final processing = app.processQueue();
+      await engine.started.future;
+      await repo.mutate(m.id, 'guest', (current) => current.useOriginal = true);
+      engine.wait!.complete();
+      await processing;
+      var restored = (await repo.list('guest')).single;
+      expect(restored.job, JobStatus.ready);
+      expect(restored.useOriginal, true);
+      expect(restored.displayPath, restored.original);
+      await app.retry(restored);
+      restored = (await repo.list('guest')).single;
+      expect(restored.useOriginal, true);
+      app.dispose();
+    },
+  );
+  test(
+    'bundled examples use durable transparent cutouts on first launch',
+    () async {
+      final app = controller(FakeEngine(), CloudService(null, media));
+      await app.initialize();
+      final examples = (await repo.list(
+        'guest',
+      )).where((m) => !m.draft).toList();
+      expect(examples.length, 4);
+      for (final m in examples) {
+        expect(m.displaysCutout, true);
+        expect(m.job, JobStatus.ready);
+        expect(await File(m.original).exists(), true);
+        final image = img.decodePng(await File(m.cutout!).readAsBytes())!;
+        expect(image.numChannels, 4);
+        expect(image.getPixel(0, 0).a, 0);
+      }
+      app.dispose();
+    },
+  );
+  test(
+    'existing examples gain cutouts without restoring cleared examples',
+    () async {
+      await repo.setPreference('seeded', 'true');
+      final m = meal('guest')
+        ..demo = true
+        ..draft = false
+        ..venue = 'Wildflour Café'
+        ..caption = 'My edited caption'
+        ..scale = .73;
+      await repo.save(m);
+      final app = controller(FakeEngine(), CloudService(null, media));
+      await app.initialize();
+      final restored = (await repo.list('guest')).single;
+      expect(restored.displaysCutout, true);
+      expect(restored.caption, 'My edited caption');
+      expect(restored.scale, .73);
+      app.dispose();
+      await repo.remove(m.id, 'guest');
+      final next = controller(FakeEngine(), CloudService(null, media));
+      await next.initialize();
+      expect(await repo.list('guest'), isEmpty);
+      next.dispose();
+    },
+  );
   test(
     'photos arriving during extraction are picked up by the active queue',
     () async {
@@ -296,4 +383,51 @@ void main() {
       expect(await file.readAsBytes(), before);
     },
   );
+  test(
+    'manual plates survive automatic completion and subsequent retries',
+    () async {
+      final memory = meal('guest');
+      await repo.save(memory);
+      final engine = FakePlateEngine()..wait = Completer<void>();
+      final app = controller(engine, CloudService(null, media));
+      final processing = app.processQueue();
+      await engine.started.future;
+      await repo.mutate(memory.id, 'guest', (current) {
+        current.plates = [
+          Plate(id: 'manual', mask: solidPlateMask(), x: .72, rotation: .3),
+        ];
+        current.platesEdited = true;
+        current.useOriginal = false;
+        current.caption = 'My plate';
+      });
+      engine.wait!.complete();
+      await processing;
+      await app.retry((await repo.list('guest')).single);
+      final saved = (await repo.list('guest')).single;
+      expect(saved.plates.single.id, 'manual');
+      expect(saved.plates.single.x, .72);
+      expect(saved.plates.single.rotation, .3);
+      expect(saved.caption, 'My plate');
+      expect(saved.job, JobStatus.ready);
+      app.dispose();
+    },
+  );
+  test('separate masks and placement survive reopening the database', () async {
+    final memory = meal('guest')
+      ..plates = [
+        Plate(id: 'a', mask: solidPlateMask(), x: .1, y: .2, scale: .4),
+        Plate(id: 'b', mask: solidPlateMask(), x: .6, rotation: -.5),
+      ]
+      ..platesEdited = true;
+    await repo.save(memory);
+    await db.close();
+    db = MorslDatabase(NativeDatabase(File('${temp.path}/test.sqlite')));
+    repo = MemoryRepository(db);
+    final saved = (await repo.list('guest')).single;
+    expect(saved.plates.length, 2);
+    expect(saved.plates.first.x, .1);
+    expect(saved.plates.first.scale, .4);
+    expect(saved.plates.last.rotation, -.5);
+    expect(saved.platesEdited, true);
+  });
 }

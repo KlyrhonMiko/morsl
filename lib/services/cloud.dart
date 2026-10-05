@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/models.dart';
 import 'media.dart';
+import 'plates.dart';
 
 class CloudService {
   CloudService(this.client, this.media);
@@ -18,6 +19,9 @@ class CloudService {
   Future<Map<String, dynamic>> push(Memory memory) async {
     final c = client!;
     final payload = memory.toJson();
+    payload['plates'] = memory.plates
+        .map((plate) => plate.toJson(local: false))
+        .toList();
     // Only upload the creator's assets. Shared downloads are never re-uploaded.
     if (memory.ownsMeal) {
       await c.rpc('reserve_meal', params: {'meal': memory.id});
@@ -65,6 +69,9 @@ class CloudService {
           await dir.delete(recursive: true);
         }
         j['original'] = '';
+        j['cutout'] = null;
+        j['thumbnail'] = null;
+        j['plates'] = [];
       }
       for (final key in ['original', 'cutout', 'thumbnail']) {
         final remote = j[key] as String?;
@@ -83,8 +90,16 @@ class CloudService {
         j[key] = target.path;
       }
       j['scope'] = account;
-      j['job'] = j['cutout'] != null ? 'ready' : 'failed';
-      result.add(Memory.fromJson(j));
+      final restored = Memory.fromJson(j);
+      restored.plates = await Future.wait(
+        restored.plates.map(
+          (plate) => renderPlate(restored.original, dir.path, plate),
+        ),
+      );
+      restored.job = restored.plates.isNotEmpty || restored.cutout != null
+          ? JobStatus.ready
+          : JobStatus.failed;
+      result.add(restored);
     }
     return result;
   }

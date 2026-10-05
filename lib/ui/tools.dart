@@ -639,8 +639,9 @@ Future<void> showInvite(
     return;
   }
   if (app.cloud.account == null) {
-    Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
     return;
   }
   final email = TextEditingController();
@@ -865,9 +866,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ),
                     OutlinedButton(
                       onPressed: () => guarded(context, () async {
-                        final guest = (await app.repository.list('guest'))
-                            .where((m) => !m.demo)
-                            .length;
+                        final guest = (await app.repository.list(
+                          'guest',
+                        )).where((m) => !m.demo).length;
                         if (!context.mounted) {
                           return;
                         }
@@ -1056,6 +1057,14 @@ class _BetaToolsScreenState extends ConsumerState<BetaToolsScreen> {
               : 'Model is not ready on this device',
           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
         ),
+        if (app.preparing) ...[
+          const SizedBox(height: 12),
+          const LinearProgressIndicator(),
+          const SizedBox(height: 8),
+          const Text(
+            'One-time download. Keep the app open; photos stay on your phone.',
+          ),
+        ],
         const SizedBox(height: 12),
         Wrap(
           spacing: 10,
@@ -1067,7 +1076,9 @@ class _BetaToolsScreenState extends ConsumerState<BetaToolsScreen> {
                   : () => guarded(context, app.prepareModel),
               icon: const Icon(Icons.download_outlined, size: 18),
               label: Text(
-                app.preparing ? 'Preparing model…' : 'Prepare model online',
+                app.preparing
+                    ? 'Downloading dish models…'
+                    : 'Download dish models · 249 MB',
               ),
             ),
             OutlinedButton.icon(

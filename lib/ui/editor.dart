@@ -7,6 +7,9 @@ import 'package:intl/intl.dart';
 
 import '../controller.dart';
 import '../data/models.dart';
+import '../services/media.dart';
+import '../services/plates.dart';
+import 'plate_tools.dart';
 import 'theme.dart';
 import 'memory_card.dart';
 import 'tools.dart';
@@ -27,6 +30,13 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   String status = 'All edits saved on this device';
   bool showPosition = false;
   bool dateEdited = false, locationEdited = false;
+  bool photoChoiceEdited = false;
+  bool platesDirty = false, findingPlates = false;
+  String? selectedPlateId;
+  Plate? get selectedPlate => memory.displaysCutout
+      ? memory.plates.where((p) => p.id == selectedPlateId).firstOrNull ??
+            memory.plates.firstOrNull
+      : null;
   bool unavailable = false;
   final Stopwatch editing = Stopwatch()..start();
   @override
@@ -54,7 +64,23 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     }
     if (current != null && mounted) {
       setState(() {
+        if (!photoChoiceEdited &&
+            memory.cutout == null &&
+            memory.plates.isEmpty &&
+            (current.cutout != null || current.plates.isNotEmpty)) {
+          memory.useOriginal = current.useOriginal;
+        }
         memory.cutout = current.cutout;
+        memory.original = current.original;
+        memory.thumbnail = current.thumbnail;
+        if (current.original.isEmpty) {
+          memory.plates = [];
+          platesDirty = false;
+        }
+        if (!platesDirty) {
+          memory.plates = current.plates.map((p) => p.copy()).toList();
+          memory.platesEdited = current.platesEdited;
+        }
         memory.job = current.job;
         memory.error = current.error;
         memory.durationMs = current.durationMs;
@@ -87,6 +113,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   Future<void> _persist() {
     final snapshot = memory.copy();
     final didDateEdit = dateEdited, didLocationEdit = locationEdited;
+    final didPlateEdit = platesDirty, didPhotoEdit = photoChoiceEdited;
     saving = saving
         .catchError((Object _) {})
         .then((_) async {
@@ -102,7 +129,11 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             current.y = snapshot.y;
             current.scale = snapshot.scale;
             current.rotation = snapshot.rotation;
-            current.useOriginal = snapshot.useOriginal;
+            if (didPhotoEdit) current.useOriginal = snapshot.useOriginal;
+            if (didPlateEdit && current.original.isNotEmpty) {
+              current.plates = snapshot.plates;
+              current.platesEdited = true;
+            }
             if (current.ownsMeal) {
               current.venue = snapshot.venue;
               current.placeId = snapshot.placeId;
@@ -129,6 +160,146 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           }
         });
     return saving;
+  }
+
+  void plateChange(VoidCallback update) => change(() {
+    platesDirty = true;
+    memory.platesEdited = true;
+    update();
+  });
+
+  Widget _guardPlateTool(Widget child) => AnimatedBuilder(
+    animation: app,
+    builder: (context, _) {
+      final available =
+          app.scope == memory.scope &&
+          app.memories.any((m) => m.id == memory.id && m.original.isNotEmpty);
+      return available
+          ? child
+          : Scaffold(
+              appBar: AppBar(),
+              body: const Center(
+                child: Text(
+                  'This photo is no longer available in this scrapbook.',
+                ),
+              ),
+            );
+    },
+  );
+
+  Future<void> addPlate({bool automatic = false}) async {
+    setState(() => findingPlates = true);
+    try {
+      final dir = await app.media.directory(memory.scope, memory.id);
+      List<Plate>? added;
+      if (automatic && app.engine is MultiSubjectSegmentationEngine) {
+        final multi = app.engine as MultiSubjectSegmentationEngine;
+        final plates = await multi.subjects(memory.original, dir.path);
+        if (plates.isEmpty) {
+          throw StateError(
+            'No dishes found. Your existing cutouts have been kept.',
+          );
+        }
+        if (!mounted) return;
+        added = plates;
+      } else {
+        if (!mounted) return;
+        added = await Navigator.push<List<Plate>>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => _guardPlateTool(
+              PlatePicker(
+                original: memory.original,
+                directory: dir.path,
+                engine: app.engine,
+                guard: _guardPlateTool,
+              ),
+            ),
+          ),
+        );
+      }
+      if (added != null &&
+          added.isNotEmpty &&
+          mounted &&
+          app.scope == memory.scope &&
+          !unavailable) {
+        final previous = memory.plates.map((p) => p.copy()).toList();
+        final previousOriginal = memory.useOriginal;
+        final generatedIds = added.map((p) => p.id).join(',');
+        plateChange(() {
+          memory.plates = automatic ? added! : [...memory.plates, ...added!];
+          selectedPlateId = added.first.id;
+          photoChoiceEdited = true;
+          memory.useOriginal = false;
+        });
+        await _persist();
+        if (automatic && mounted && !unavailable && app.scope == memory.scope) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${added.length} dishes separated'),
+              duration: const Duration(seconds: 10),
+              action: SnackBarAction(
+                label: 'Undo',
+                onPressed: () {
+                  if (!mounted ||
+                      unavailable ||
+                      app.scope != memory.scope ||
+                      memory.plates.map((p) => p.id).join(',') !=
+                          generatedIds) {
+                    return;
+                  }
+                  plateChange(() {
+                    memory.plates = previous;
+                    memory.useOriginal = previousOriginal;
+                    selectedPlateId = previous.firstOrNull?.id;
+                    photoChoiceEdited = true;
+                  });
+                  unawaited(_persist());
+                },
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        message(context, e.toString().replaceFirst('Bad state: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => findingPlates = false);
+    }
+  }
+
+  Future<void> editPlate() async {
+    final plate = selectedPlate;
+    if (plate == null) return;
+    final edited = await Navigator.push<Plate>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => _guardPlateTool(
+          PlateEdgeEditor(original: memory.original, plate: plate),
+        ),
+      ),
+    );
+    if (edited == null ||
+        !mounted ||
+        unavailable ||
+        app.scope != memory.scope) {
+      return;
+    }
+    try {
+      final dir = await app.media.directory(memory.scope, memory.id);
+      final rendered = await renderPlate(memory.original, dir.path, edited);
+      if (!mounted || unavailable || app.scope != memory.scope) return;
+      plateChange(
+        () => memory.plates = memory.plates
+            .map((p) => p.id == rendered.id ? rendered : p)
+            .toList(),
+      );
+      await _persist();
+    } catch (e) {
+      if (mounted) message(context, 'Could not save the plate: $e');
+    }
   }
 
   Future<void> saveMemory() async {
@@ -361,6 +532,19 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                         aspectRatio: .91,
                         child: MemoryCanvas(
                           memory: memory,
+                          selectedPlate: selectedPlate?.id,
+                          onPlateSelected: (id) =>
+                              setState(() => selectedPlateId = id),
+                          onPlateTransform: (id, x, y, s, r) => plateChange(() {
+                            selectedPlateId = id;
+                            final plate = memory.plates.firstWhere(
+                              (p) => p.id == id,
+                            );
+                            plate.x = x;
+                            plate.y = y;
+                            plate.scale = s;
+                            plate.rotation = r;
+                          }),
                           onTransform: (x, y, s, r) => change(() {
                             memory.x = x;
                             memory.y = y;
@@ -556,27 +740,35 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             label: Text(
               'Original photo',
               style: TextStyle(
-                color: memory.useOriginal ? Colors.white : Palette.ink,
+                color: !memory.displaysCutout ? Colors.white : Palette.ink,
               ),
             ),
-            selected: memory.useOriginal,
-            onSelected: (_) => change(() => memory.useOriginal = true),
+            selected: !memory.displaysCutout,
+            onSelected: (_) => change(() {
+              photoChoiceEdited = true;
+              memory.useOriginal = true;
+            }),
           ),
           ChoiceChip(
             label: Text(
-              memory.cutout == null ? 'Cutout not ready' : 'Food cutout',
+              memory.cutout == null && memory.plates.isEmpty
+                  ? 'Cutout not ready'
+                  : 'Food cutouts',
               style: TextStyle(
-                color: memory.cutout == null
+                color: memory.cutout == null && memory.plates.isEmpty
                     ? Palette.muted
-                    : !memory.useOriginal
+                    : memory.displaysCutout
                     ? Colors.white
                     : Palette.ink,
               ),
             ),
-            selected: !memory.useOriginal,
-            onSelected: memory.cutout == null
+            selected: memory.displaysCutout,
+            onSelected: memory.cutout == null && memory.plates.isEmpty
                 ? null
-                : (_) => change(() => memory.useOriginal = false),
+                : (_) => change(() {
+                    photoChoiceEdited = true;
+                    memory.useOriginal = false;
+                  }),
           ),
         ],
       ),
@@ -584,10 +776,11 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
         Padding(
           padding: const EdgeInsets.only(top: 10),
           child: Text(
-            'Keep going with your original. Retry cutout in AI tools whenever you like.',
+            'Select a missed plate below. You can edit its edges offline.',
             style: const TextStyle(fontSize: 11, color: Palette.muted),
           ),
         ),
+      _plateControls(),
       Wrap(
         spacing: 8,
         children: [
@@ -600,17 +793,48 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             ),
           ),
           TextButton(
-            onPressed: () => change(() {
-              memory.x = 0;
-              memory.y = 0;
-              memory.scale = 1;
-              memory.rotation = 0;
-            }),
+            onPressed: () {
+              final plate = selectedPlate;
+              if (plate != null) {
+                plateChange(() {
+                  plate.x = .2;
+                  plate.y = .15;
+                  plate.scale = .6;
+                  plate.rotation = 0;
+                });
+              } else {
+                change(() {
+                  memory.x = 0;
+                  memory.y = 0;
+                  memory.scale = 1;
+                  memory.rotation = 0;
+                });
+              }
+            },
             child: const Text('Reset layout', style: TextStyle(fontSize: 11)),
           ),
         ],
       ),
-      if (showPosition) ...[
+      if (showPosition && selectedPlate != null) ...[
+        _slider('Plate horizontal position', selectedPlate!.x, -.5, 1, (v) {
+          platesDirty = true;
+          selectedPlate!.x = v;
+        }),
+        _slider('Plate vertical position', selectedPlate!.y, -.5, 1, (v) {
+          platesDirty = true;
+          selectedPlate!.y = v;
+        }),
+        _slider('Plate size', selectedPlate!.scale, .15, 1.4, (v) {
+          platesDirty = true;
+          selectedPlate!.scale = v;
+        }),
+        _slider('Plate rotation', selectedPlate!.rotation, -math.pi, math.pi, (
+          v,
+        ) {
+          platesDirty = true;
+          selectedPlate!.rotation = v;
+        }),
+      ] else if (showPosition) ...[
         _slider(
           'Horizontal position',
           memory.x,
@@ -785,6 +1009,86 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       const SizedBox(height: 30),
     ],
   );
+  Widget _plateControls() => Padding(
+    padding: const EdgeInsets.only(top: 12),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (memory.plates.isNotEmpty) ...[
+          Text(
+            '${memory.plates.length} separate plates - select one to move or edit',
+            style: const TextStyle(color: Palette.muted, fontSize: 12),
+          ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              for (final plate in memory.plates)
+                ChoiceChip(
+                  label: Text('Plate ${memory.plates.indexOf(plate) + 1}'),
+                  selected: selectedPlate?.id == plate.id,
+                  onSelected: (_) => change(() {
+                    selectedPlateId = plate.id;
+                    photoChoiceEdited = true;
+                    memory.useOriginal = false;
+                  }),
+                ),
+            ],
+          ),
+        ],
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: findingPlates || memory.original.isEmpty
+                  ? null
+                  : () => addPlate(),
+              icon: const Icon(Icons.crop_free, size: 18),
+              label: const Text('Select a plate'),
+            ),
+            TextButton.icon(
+              onPressed:
+                  findingPlates ||
+                      memory.original.isEmpty ||
+                      app.engine is! MultiSubjectSegmentationEngine
+                  ? null
+                  : () => addPlate(automatic: true),
+              icon: const Icon(Icons.auto_awesome, size: 18),
+              label: Text(
+                findingPlates ? 'Separating dishes...' : 'Separate dishes',
+              ),
+            ),
+            if (selectedPlate != null) ...[
+              TextButton.icon(
+                onPressed: findingPlates ? null : editPlate,
+                icon: const Icon(Icons.brush_outlined, size: 18),
+                label: const Text('Edit edges'),
+              ),
+              TextButton.icon(
+                onPressed: findingPlates
+                    ? null
+                    : () => plateChange(() {
+                        final id = selectedPlate!.id;
+                        memory.plates = memory.plates
+                            .where((p) => p.id != id)
+                            .toList();
+                        selectedPlateId = memory.plates.firstOrNull?.id;
+                        if (memory.plates.isEmpty) {
+                          photoChoiceEdited = true;
+                          memory.useOriginal = true;
+                        }
+                      }),
+                icon: const Icon(Icons.close, size: 18),
+                label: const Text('Remove plate'),
+              ),
+            ],
+          ],
+        ),
+      ],
+    ),
+  );
+
   Widget _slider(
     String label,
     double value,

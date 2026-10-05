@@ -13,11 +13,24 @@ class MemoryCanvas extends StatefulWidget {
     required this.memory,
     this.preview = false,
     this.onTransform,
+    this.selectedPlate,
+    this.onPlateSelected,
+    this.onPlateTransform,
   });
   final Memory memory;
   final bool preview;
   final void Function(double x, double y, double scale, double rotation)?
   onTransform;
+  final String? selectedPlate;
+  final ValueChanged<String>? onPlateSelected;
+  final void Function(
+    String id,
+    double x,
+    double y,
+    double scale,
+    double rotation,
+  )?
+  onPlateTransform;
   @override
   State<MemoryCanvas> createState() => _MemoryCanvasState();
 }
@@ -34,9 +47,11 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
       final h = c.maxHeight;
       final unit = w / 360;
       final compact = memory.layout == 'postcard';
-      final imageHeight = h * (compact ? .53 : .55);
+      final cutout = memory.displaysCutout;
+      final centered = memory.layout == 'centered';
+      final imageHeight = h * (cutout ? .62 : .54);
       final photo = memory.displayPath;
-      Widget image = photo.isEmpty
+      final Widget image = photo.isEmpty
           ? const Center(
               child: Text(
                 'Photo removed by its contributor',
@@ -45,12 +60,8 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
               ),
             )
           : Image.file(
-              File(
-                preview && memory.useOriginal
-                    ? memory.thumbnail ?? photo
-                    : photo,
-              ),
-              fit: memory.useOriginal ? BoxFit.cover : BoxFit.contain,
+              File(preview && !cutout ? memory.thumbnail ?? photo : photo),
+              fit: BoxFit.contain,
               cacheWidth: preview ? 700 : null,
               errorBuilder: (c, e, s) => const Center(
                 child: Icon(
@@ -60,29 +71,13 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                 ),
               ),
             );
-      if (memory.useOriginal) {
-        image = Container(
-          padding: const EdgeInsets.all(7),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFFFDFA),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: .09),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: image,
-        );
-      }
       return MediaQuery.withNoTextScaling(
         child: Semantics(
           image: true,
           label:
               '${memory.title}, ${memory.venue}, ${DateFormat('MMM d, yyyy').format(memory.createdAt)}',
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(5),
+            borderRadius: BorderRadius.circular(12),
             child: ColoredBox(
               color: Palette.background(memory.background),
               child: Stack(
@@ -111,56 +106,110 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                       color: Palette.forest,
                     ),
                   ),
-                  Positioned(
-                    left: w * .09 + memory.x * w,
-                    top: h * .14 + memory.y * h,
-                    width: w * .82,
-                    height: imageHeight,
-                    child: Transform.rotate(
-                      angle: memory.rotation + (compact ? -.045 : .025),
-                      child: Transform.scale(
-                        scale: memory.scale,
-                        child: GestureDetector(
-                          onScaleStart: onTransform == null
-                              ? null
-                              : (_) {
-                                  _startScale = memory.scale;
-                                  _startRotation = memory.rotation;
-                                },
-                          onScaleUpdate: onTransform == null
-                              ? null
-                              : (d) {
-                                  onTransform(
-                                    (memory.x + d.focalPointDelta.dx / w).clamp(
-                                      -.35,
-                                      .35,
+                  if (cutout && memory.plates.isNotEmpty)
+                    for (final plate in memory.plates)
+                      Positioned(
+                        left: plate.x * w,
+                        top: plate.y * h,
+                        width: plate.scale * w,
+                        height: plate.scale * w / plate.aspect,
+                        child: Transform.rotate(
+                          angle: plate.rotation,
+                          child: GestureDetector(
+                            onTap: widget.onPlateSelected == null
+                                ? null
+                                : () => widget.onPlateSelected!(plate.id),
+                            onScaleStart: widget.onPlateTransform == null
+                                ? null
+                                : (_) {
+                                    widget.onPlateSelected?.call(plate.id);
+                                    _startScale = plate.scale;
+                                    _startRotation = plate.rotation;
+                                  },
+                            onScaleUpdate: widget.onPlateTransform == null
+                                ? null
+                                : (d) => widget.onPlateTransform!(
+                                    plate.id,
+                                    (plate.x + d.focalPointDelta.dx / w).clamp(
+                                      -.5,
+                                      1,
                                     ),
-                                    (memory.y + d.focalPointDelta.dy / h).clamp(
-                                      -.35,
-                                      .35,
+                                    (plate.y + d.focalPointDelta.dy / h).clamp(
+                                      -.5,
+                                      1,
                                     ),
-                                    (_startScale * d.scale).clamp(.4, 1.6),
+                                    (_startScale * d.scale).clamp(.15, 1.4),
                                     (_startRotation + d.rotation).clamp(
                                       -math.pi,
                                       math.pi,
                                     ),
-                                  );
-                                },
-                          child: image,
+                                  ),
+                            child: Semantics(
+                              label:
+                                  'Plate ${memory.plates.indexOf(plate) + 1}',
+                              child: Container(
+                                decoration: widget.selectedPlate == plate.id
+                                    ? BoxDecoration(
+                                        border: Border.all(
+                                          color: Palette.forest.withValues(
+                                            alpha: .4,
+                                          ),
+                                        ),
+                                        borderRadius: BorderRadius.circular(8),
+                                      )
+                                    : null,
+                                child: Image.file(
+                                  File(plate.path),
+                                  fit: BoxFit.contain,
+                                  cacheWidth: preview ? 700 : null,
+                                  errorBuilder: (c, e, s) => const Center(
+                                    child: Icon(Icons.restaurant_outlined),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  if (memory.useOriginal)
+                  if (!cutout || memory.plates.isEmpty)
                     Positioned(
-                      top: h * .12,
-                      left: w * .39,
-                      width: w * .24,
-                      height: 20,
+                      left: w * (compact ? .08 : .1) + memory.x * w,
+                      top: h * (centered ? .12 : .13) + memory.y * h,
+                      width: w * (compact ? .84 : .8),
+                      height: imageHeight,
                       child: Transform.rotate(
-                        angle: -.08,
-                        child: ColoredBox(
-                          color: const Color(0xFFD5BC8D).withValues(alpha: .65),
+                        angle: memory.rotation + (compact ? -.045 : 0),
+                        child: Transform.scale(
+                          scale: memory.scale,
+                          child: GestureDetector(
+                            onScaleStart: onTransform == null
+                                ? null
+                                : (_) {
+                                    _startScale = memory.scale;
+                                    _startRotation = memory.rotation;
+                                  },
+                            onScaleUpdate: onTransform == null
+                                ? null
+                                : (d) {
+                                    onTransform(
+                                      (memory.x + d.focalPointDelta.dx / w)
+                                          .clamp(-.35, .35),
+                                      (memory.y + d.focalPointDelta.dy / h)
+                                          .clamp(-.35, .35),
+                                      (_startScale * d.scale).clamp(.4, 1.6),
+                                      (_startRotation + d.rotation).clamp(
+                                        -math.pi,
+                                        math.pi,
+                                      ),
+                                    );
+                                  },
+                            child: cutout
+                                ? image
+                                : ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: image,
+                                  ),
+                          ),
                         ),
                       ),
                     ),
@@ -175,7 +224,7 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                           memory.caption.isEmpty
                               ? 'A little bite of today.'
                               : memory.caption,
-                          size: (compact ? 26 : 29) * unit,
+                          size: (compact ? 26.0 : 28.0) * unit,
                           maxLines: 2,
                           align: TextAlign.center,
                         ),
@@ -196,7 +245,7 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
-                                    fontSize: 10,
+                                    fontSize: 12,
                                     color: Palette.muted,
                                     fontWeight: FontWeight.w600,
                                   ),
@@ -267,7 +316,7 @@ class MemoryCard extends StatelessWidget {
             label: 'Open ${memory.title}',
             button: true,
             child: AspectRatio(
-              aspectRatio: .91,
+              aspectRatio: .96,
               child: MemoryCanvas(memory: memory, preview: true),
             ),
           ),

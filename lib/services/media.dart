@@ -6,8 +6,9 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:native_cutout/native_cutout.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import '../data/models.dart';
+import 'plates.dart';
 
 abstract interface class SegmentationEngine {
   Future<bool> available();
@@ -16,9 +17,31 @@ abstract interface class SegmentationEngine {
   String get runtime;
 }
 
-class NativeSegmentation implements SegmentationEngine {
+abstract interface class MultiSubjectSegmentationEngine {
+  Future<List<Plate>> subjects(
+    String original,
+    String directory, {
+    Plate? region,
+  });
+}
+
+class NativeSegmentation
+    implements SegmentationEngine, MultiSubjectSegmentationEngine {
+  @override
+  Future<List<Plate>> subjects(
+    String original,
+    String directory, {
+    Plate? region,
+  }) async {
+    if (!await available()) {
+      throw StateError(
+        'Download the dish models once in Settings, then retry offline.',
+      );
+    }
+    return detectPlates(original, directory, region: region);
+  }
+
   String device = '';
-  bool iosRuntime = true;
   Future<void> inspectDevice() async {
     try {
       final info = DeviceInfoPlugin();
@@ -26,37 +49,28 @@ class NativeSegmentation implements SegmentationEngine {
         final android = await info.androidInfo;
         device =
             '${android.manufacturer} ${android.model}; API ${android.version.sdkInt}; ';
-      } else if (Platform.isIOS) {
-        final ios = await info.iosInfo;
-        iosRuntime =
-            (int.tryParse(ios.systemVersion.split('.').first) ?? 0) >= 17;
-        device =
-            '${ios.utsname.machine}; ${ios.systemName} ${ios.systemVersion}; ';
       }
     } catch (_) {
       /* OS details remain available on unsupported platforms. */
     }
   }
 
-  bool get supported => Platform.isAndroid || (Platform.isIOS && iosRuntime);
+  bool get supported => Platform.isAndroid;
   @override
   String get runtime =>
-      '$device${Platform.operatingSystem} ${Platform.operatingSystemVersion}; native_cutout 0.4.0; ${Platform.isIOS
-          ? 'Vision'
-          : Platform.isAndroid
-          ? 'ML Kit'
-          : 'unavailable'}';
+      '$device${Platform.operatingSystem} ${Platform.operatingSystemVersion}; ${Platform.isAndroid ? 'Grounding DINO Tiny + MobileSAM; dish pipeline v1' : 'automatic cutouts unavailable'}';
   @override
   Future<bool> available() async =>
-      supported && await NativeCutout.isModelAvailable();
+      supported &&
+      (await plateChannel.invokeMethod<bool>('available') ?? false);
   @override
   Future<bool> prepare() async =>
-      supported && await NativeCutout.downloadModel();
+      supported && (await plateChannel.invokeMethod<bool>('prepare') ?? false);
   @override
   Future<String> process(String original, String output) async {
     if (!supported) {
       throw StateError(
-        'Cutouts are available on Android and iOS 17+. You can keep composing with the original.',
+        'Automatic cutouts are available on Android. You can select a plate and edit its edges by hand.',
       );
     }
     if (!await available()) {
@@ -64,28 +78,19 @@ class NativeSegmentation implements SegmentationEngine {
         'Model not ready. Prepare it online, then retry. Your original is safe.',
       );
     }
-    final result = await NativeCutout.removeBackground(
-      original,
-      options: const CutoutOptions(cropToSubject: true),
-    );
-    switch (result) {
-      case CutoutFileSuccess(:final path):
-        await File(path).copy(output);
-        return output;
-      case CutoutBytesSuccess(:final pngBytes):
-        await File(output).writeAsBytes(pngBytes, flush: true);
-        return output;
-      case CutoutFailure(:final code, :final message):
-        throw StateError('${code.name}: $message');
-    }
+    final plates = await subjects(original, p.dirname(output));
+    if (plates.isEmpty) throw StateError('No dishes found in this photo.');
+    await File(plates.first.path).copy(output);
+    return output;
   }
 }
 
 class MediaStore {
   Future<Directory> directory(String scope, String id) async {
     final root = await getApplicationDocumentsDirectory();
-    return Directory(p.join(root.path, 'morsl', scope, id))
-        .create(recursive: true);
+    return Directory(
+      p.join(root.path, 'morsl', scope, id),
+    ).create(recursive: true);
   }
 
   Future<String> preserve(XFile photo, String scope, String id) async {
@@ -99,9 +104,13 @@ class MediaStore {
     return target;
   }
 
-  Future<String> sample(String asset, String id) async {
+  Future<String> sample(
+    String asset,
+    String id, {
+    String filename = 'original.jpg',
+  }) async {
     final dir = await directory('guest', id);
-    final output = p.join(dir.path, 'original.jpg');
+    final output = p.join(dir.path, filename);
     final bytes = await rootBundle.load(asset);
     await File(output).writeAsBytes(
       bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),

@@ -36,6 +36,9 @@ android/build/
 .pub/
 /build/
 /coverage/
+/output/previews/
+/output/cutout-verification/
+flutter_*.png
 
 # Symbolication related
 app.*.symbols
