@@ -18,6 +18,11 @@ internet connection, Google sign-in, and explicit cloud-processing consent.
 No local model download is required. Approved photos are uploaded for processing.
 Each detected dish gets its own
 transparent mask and independent placement.
+Automatic dish masks retain food inside the dish outline. Enclosed gaps are
+filled; sparse or photo-edge-clipped rims use a convex outline fallback.
+Detections smaller than 1% of the uploaded image are omitted to reduce tiny
+background dishes and screenshot gallery thumbnails. Very small dishes or
+irregular, overlapping outlines may still need the manual edge tools.
 New imports run this automatically when cloud cutouts are enabled in Settings.
 For older merged results, **Separate dishes**
 in Plating replaces the current cutouts in one step. It can reset existing plate
@@ -112,6 +117,72 @@ illustration and local locations; cloud actions explain their configuration stat
 - Cutout comparisons, quality/failure labels, timings, runtime details,
   processing and backup queue status, JSON evaluation export.
   Local events include editing duration, revisits, sync failures, and restoration.
+
+## Modal timing logs
+
+Dish cleanup uses SciPy's compiled hole filling with four-neighbour connectivity,
+reuses candidate bounds, and computes row extrema with NumPy reductions. The
+convex envelope fallback and dish filtering thresholds are preserved. A local
+benchmark of six synthetic masks at 1600×1200 measured median cleanup times
+of 1144 ms before and 90 ms after (three runs each); this is not a live Modal
+measurement. The old and new masks and encoded responses matched exactly.
+
+After deploying `modal/app.py`, search the API and GPU worker logs for
+`"event":"sam3_timing"`. Each JSON line reports milliseconds in `total_ms`
+and `stages_ms`, with `status` and an error type for failed operations.
+
+- `snapshot_prepare`: imports, model loading, cache commit, and synthetic-image
+  warmup before capturing the GPU snapshot. This runs when creating a snapshot,
+  not on every restore. With snapshots disabled it is named `startup`.
+- `worker_ready`: the hook after initialization or snapshot restore. It gives
+  each worker a fresh `worker_id` and request counter. Its small `total_ms` is
+  only hook time, not snapshot restoration or container provisioning time.
+  `snapshot_id` links workers that share the captured model state.
+- `segment`: image decoding, image encoder, each plate/bowl/food-tray prompt,
+  transfers to CPU, mask cleanup, and mask encoding (including deduplication).
+  `first_request` identifies the first extraction on a worker.
+- `remote_call`: API-to-worker elapsed time, including queueing, any cold
+  start, processing, and result transfer. Match its `request_id` to `segment`.
+
+Compare first requests with later requests to distinguish startup overhead
+from processing costs. GPU stages synchronize CUDA at their boundaries for
+accurate measurements; this adds some profiling overhead. These timings do
+not include billed idle time, the client upload, or authentication, and are
+not a bill calculation. Logs contain no photos or authentication tokens.
+The extraction response format is unchanged.
+
+## Testing Modal snapshots
+
+GPU snapshots are enabled in `modal/app.py`. Model loading and warmup occur in
+`@modal.enter(snap=True)`; per-worker counters initialize in the hook with
+`snap=False`. Warmup uses only a synthetic image and its features are discarded
+before capture. This uses Modal's experimental GPU snapshot feature; live
+compatibility and the speed improvement must be measured after deployment.
+
+1. Run `modal deploy modal/app.py`, then extract a known plate photo in the app.
+   The first invocation may take longer while Modal creates a snapshot.
+2. Check the GPU worker's Containers tab for snapshot creation/restoration
+   indicators, or logs for `Snapshot created. Restoring Function from memory snapshot.`
+3. Wait until the GPU worker has stopped (normally allow at least two minutes
+   without requests; confirm it is stopped in Modal), then process the same photo.
+   A new `worker_id` and `first_request: true` establish that this is a new worker;
+   the Modal restore indicator establishes that it used a snapshot.
+4. Repeat at least three cold requests, waiting for shutdown between each.
+   Modal may create 2–3 GPU snapshots for different worker hardware, so distinguish
+   creation runs from restore runs. Do not redeploy between requests: deployment
+   changes invalidate existing snapshots.
+5. Compare the median `remote_call.total_ms` for confirmed restore runs with
+   the previous 28–38 second cold calls. Also check total HTTP duration, successful
+   responses, plate count, and cutout quality. Test several photos after restore
+   to check that warmup did not leave stale image features.
+6. For a warm comparison, immediately repeat an extraction and check that
+   `worker_id` is unchanged and `first_request` is false.
+
+For rollback or a controlled baseline, set `GPU_SNAPSHOTS = False` in
+`modal/app.py` and redeploy. Re-enable and redeploy to create new snapshots.
+Snapshots can skip imports and first-use initialization, but restoring model
+weights and acquiring a GPU can still take time. They do not keep a GPU running
+all day. Reference: [Modal memory snapshots](https://modal.com/docs/guide/memory-snapshots).
 
 ## Verification
 

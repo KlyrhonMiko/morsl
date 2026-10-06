@@ -6,6 +6,7 @@ import 'package:intl/intl.dart';
 
 import '../data/models.dart';
 import 'theme.dart';
+import 'cutout_status.dart';
 
 class MemoryCanvas extends StatefulWidget {
   const MemoryCanvas({
@@ -323,6 +324,11 @@ class MemoryCard extends StatelessWidget {
         ),
       ),
       const SizedBox(height: 13),
+      if (memory.job == JobStatus.processing ||
+          memory.job == JobStatus.queued) ...[
+        CutoutStatus(job: memory.job, compact: true),
+        const SizedBox(height: 13),
+      ],
       Row(
         children: [
           Expanded(

@@ -152,6 +152,25 @@ void main() {
     child: child,
   );
 
+  testWidgets('editor shows processing feedback and removes it on completion', (
+    tester,
+  ) async {
+    final memory = app.memories.first..job = JobStatus.processing;
+    await tester.pumpWidget(
+      host(MaterialApp(home: PlatingEditor(memory: memory))),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Creating your cutout…'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    memory.job = JobStatus.ready;
+    await app.repository.save(memory, enqueue: false);
+    await app.reload();
+    await tester.pumpAndSettle();
+    expect(find.text('Creating your cutout…'), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'Geoapify map opens a meal and keeps attribution and offline access',
     (tester) async {

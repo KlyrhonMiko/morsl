@@ -15,6 +15,7 @@ import 'memory_card.dart';
 import 'tools.dart';
 import 'cloud_cutouts.dart';
 import 'account_gate.dart';
+import 'cutout_status.dart';
 
 class PlatingEditor extends ConsumerStatefulWidget {
   const PlatingEditor({super.key, required this.memory});
@@ -538,6 +539,14 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                     color: Palette.forest,
                   ),
                   const SizedBox(height: 22),
+                  if (findingPlates ||
+                      memory.job == JobStatus.processing ||
+                      memory.job == JobStatus.queued) ...[
+                    CutoutStatus(
+                      job: findingPlates ? JobStatus.processing : memory.job,
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   Center(
                     child: ConstrainedBox(
                       constraints: BoxConstraints(maxWidth: wide ? 440 : 430),

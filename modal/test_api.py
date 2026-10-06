@@ -10,7 +10,8 @@ import numpy as np
 from PIL import Image
 
 from cloud_api import SupabaseAuthenticator, create_api
-from image_contract import encode_plates, open_photo, MAX_IMAGE_BYTES
+from image_contract import (encode_plates, open_photo, MAX_IMAGE_BYTES,
+                            dish_silhouette, prepare_dish_candidates)
 
 
 def photo_bytes(width=10, height=20):
@@ -41,6 +42,39 @@ def auth_response(request):
 
 
 class ContractTests(unittest.TestCase):
+    def test_food_hole_is_filled_without_expanding_dish_outline(self):
+        y, x = np.ogrid[:100, :120]
+        outer = ((x - 60) / 45) ** 2 + ((y - 50) / 35) ** 2 <= 1
+        inner = ((x - 60) / 38) ** 2 + ((y - 50) / 28) ** 2 < 1
+        self.assertTrue(np.array_equal(dish_silhouette(outer & ~inner), outer))
+
+    def test_clipped_open_rim_retains_food_at_image_edge(self):
+        y, x = np.ogrid[:100, :100]
+        outer = ((x - 5) / 60) ** 2 + ((y - 50) / 40) ** 2 <= 1
+        inner = ((x - 5) / 54) ** 2 + ((y - 50) / 34) ** 2 < 1
+        result = dish_silhouette(outer & ~inner)
+        self.assertTrue(result[50, 5])
+        self.assertTrue(result[50, 0])
+        self.assertFalse(result[0, 99])
+        self.assertLess(np.count_nonzero(result ^ outer), 100)
+
+    def test_thumbnail_dishes_filtered_and_completed_duplicates_removed(self):
+        rim = np.zeros((200, 200), bool)
+        rim[20:100, 20:100] = True
+        full = rim.copy()
+        rim[24:96, 24:96] = False
+        thumbnail = np.zeros_like(rim)
+        thumbnail[180:190, 10:20] = True
+        other = np.zeros_like(rim)
+        other[120:160, 120:160] = True
+        candidates = prepare_dish_candidates(
+            [(rim, .95), (full, .9), (thumbnail, .99), (other, .8)], 200, 200,
+        )
+        result = encode_plates(candidates, 200, 200)
+        self.assertEqual(len(result["plates"]), 2)
+        mask = Image.open(io.BytesIO(base64.b64decode(result["plates"][0]["mask"])))
+        self.assertEqual(mask.getpixel((40, 40))[3], 255)
+
     def test_crop_alpha_and_shared_flutter_fixture(self):
         result = response_fixture()
         mask = Image.open(io.BytesIO(base64.b64decode(result["plates"][0]["mask"])))

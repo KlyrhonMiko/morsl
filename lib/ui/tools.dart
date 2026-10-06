@@ -12,6 +12,7 @@ import '../data/models.dart';
 import 'theme.dart';
 import 'cloud_cutouts.dart';
 import 'account_gate.dart';
+import 'cutout_status.dart';
 
 void message(BuildContext context, String text) {
   ScaffoldMessenger.of(context).showSnackBar(
@@ -447,6 +448,10 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
           const SizedBox(height: 12),
           const Handwriting('A little imperfect is okay.', size: 35),
           const SizedBox(height: 12),
+          if (retrying) ...[
+            const CutoutStatus(job: JobStatus.processing, compact: true),
+            const SizedBox(height: 12),
+          ],
           Row(
             children: [
               Expanded(child: _preview(m.original, 'Original')),
