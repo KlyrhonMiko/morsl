@@ -2,9 +2,12 @@
 
 **Little bites. Our little history.**
 
-A native Flutter beta for keeping meals as personal scrapbook memories. The app
-runs in browse-only mode before Google sign-in. Sign in → capture → durable draft → optional cutout → Plating
-→ save → invite → History / Map. Cutout quality never gates the rest of the app.
+A native Flutter beta centered on a library of plate cutouts. Sign in → add a meal
+photo → cut out individual plates → Library. Each plate keeps its restaurant, time,
+and companions, plus an independent 1–5 star rating and optional note. Choose any
+plates from the library to arrange into one photo; save an editable creation or
+export a 1600 × 1600 PNG. Arrangements are saved on this device, separately from
+source meals. Photos still waiting for cutouts stay in Drafts.
 
 ## Run the local beta
 
@@ -25,7 +28,7 @@ background dishes and screenshot gallery thumbnails. Very small dishes or
 irregular, overlapping outlines may still need the manual edge tools.
 New imports run this automatically when cloud cutouts are enabled in Settings.
 For older merged results, **Separate dishes**
-in Plating replaces the current cutouts in one step. It can reset existing plate
+in Meal details replaces the current cutouts in one step. It can reset existing plate
 positions and edge edits, so use it when you want to regenerate them.
 
 Recognition is not guaranteed for every photo, and parts outside the photo or
@@ -37,7 +40,8 @@ for the current deployment script and client integration.
 First launch includes clearly labeled example memories and an example draft.
 Saved examples include bundled transparent food cutouts from their source photos;
 existing examples are upgraded in place. Newly captured meals automatically show
-their first successful cutout, and an explicit original-photo choice is preserved.
+their successful cutouts in the plate library. Original photos remain as source
+material for edge corrections; there is no original/cutout or layout selector.
 Bundled examples stay local and never upload. Google sign-in is required for camera,
 import, manual editing, bookmarks, sharing, exports, and changes to settings. Guests
 can browse and search the example scrapbook. Camera and import
@@ -99,10 +103,13 @@ illustration and local locations; cloud actions explain their configuration stat
 - Cloud cutout adapter: processing and failure handling, with locally rendered
   masks and durable cutout storage.
   Interrupted jobs return to the queue at launch; originals remain editable.
-- Plating: three presets, four paper backgrounds, normalized drag/scale/rotation,
-  keyboard-accessible sliders, photo/cutout choice, reset, metadata, autosave, save.
-- Chronological scrapbook, caption/venue/companion search, companion/date/repeat
-  filters, bookmark, open/edit/archive; evening reminders scoped to the account,
+- Plate library with individual cutouts, restaurant/time metadata, plate names,
+  1–5 star food ratings, optional notes, and plate/restaurant search.
+- Separate photo editor: select plates across meals, freely move/resize/rotate,
+  reorder, add/remove plates, choose a background, save an editable local creation,
+  and export a PNG. There are no layout presets or original/cutout selectors.
+- Meal details and edge corrections autosave independently of arrangements;
+  evening reminders are scoped to the account,
   scheduled for unfinished drafts independently of AI completion.
 - Confirmed map locations, Geoapify maps with meal clustering, memory pin opening, companion
   and repeat filters, offline list. Venue suggestions are live and user-confirmed.

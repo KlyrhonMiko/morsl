@@ -95,6 +95,7 @@ class Memory {
     this.mealRevision = 0,
     this.memoryRevision = 0,
     this.demo = false,
+    this.plateReviews = const {},
   });
 
   final String id;
@@ -118,6 +119,7 @@ class Memory {
   String? error, rating, failureCategory, runtime;
   int? durationMs;
   int mealRevision, memoryRevision;
+  Map<String, PlateReview> plateReviews;
   bool get hasLocation =>
       locationConfirmed && latitude != null && longitude != null;
   bool get ownsMeal => creator == null || creator == scope;
@@ -172,6 +174,9 @@ class Memory {
     'mealRevision': mealRevision,
     'memoryRevision': memoryRevision,
     'demo': demo,
+    'plateReviews': plateReviews.map(
+      (id, review) => MapEntry(id, review.toJson()),
+    ),
   };
   String encode() => jsonEncode(toJson());
   Memory copy() => Memory.fromJson(toJson());
@@ -220,7 +225,48 @@ class Memory {
     mealRevision: j['mealRevision'] ?? 0,
     memoryRevision: j['memoryRevision'] ?? 0,
     demo: j['demo'] ?? false,
+    plateReviews: (j['plateReviews'] as Map<String, dynamic>? ?? {}).map(
+      (id, review) =>
+          MapEntry(id, PlateReview.fromJson(Map<String, dynamic>.from(review))),
+    ),
   );
+}
+
+/// Food ratings are independent of segmentation-quality evaluations.
+class PlateReview {
+  const PlateReview({this.stars, this.note = '', this.name = ''});
+  final int? stars;
+  final String note, name;
+  Map<String, dynamic> toJson() => {'stars': stars, 'note': note, 'name': name};
+  factory PlateReview.fromJson(Map<String, dynamic> json) => PlateReview(
+    stars: json['stars'] as int?,
+    note: json['note'] as String? ?? '',
+    name: json['name'] as String? ?? '',
+  );
+}
+
+/// A library entry references its source meal, so its restaurant and date stay attached.
+class LibraryPlate {
+  const LibraryPlate(this.memory, this.plateId, this.path);
+  final Memory memory;
+  final String plateId, path;
+  String get key => '${memory.id}/$plateId';
+  PlateReview get review => memory.plateReviews[plateId] ?? const PlateReview();
+  String get title => review.name.isNotEmpty
+      ? review.name
+      : memory.plates.length > 1
+      ? 'Plate ${memory.plates.indexWhere((p) => p.id == plateId) + 1}'
+      : memory.caption.isNotEmpty
+      ? memory.caption
+      : 'Untitled plate';
+  static List<LibraryPlate> fromMemories(Iterable<Memory> memories) => [
+    for (final memory in memories.where((m) => !m.archived))
+      if (memory.plates.isNotEmpty)
+        for (final plate in memory.plates.where((p) => p.path.isNotEmpty))
+          LibraryPlate(memory, plate.id, plate.path)
+      else if (memory.cutout?.isNotEmpty == true)
+        LibraryPlate(memory, '__cutout__', memory.cutout!),
+  ];
 }
 
 class SyncOperation {

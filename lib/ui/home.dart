@@ -10,6 +10,7 @@ import 'editor.dart';
 import 'map_screen.dart';
 import 'tools.dart';
 import 'account_gate.dart';
+import 'plate_library.dart';
 
 class MorslHome extends ConsumerStatefulWidget {
   const MorslHome({super.key});
@@ -89,7 +90,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, c) {
       final wide = c.maxWidth >= 1000;
-      final title = ['History', 'Map', 'Drafts'][app.destination];
+      final title = ['Library', 'Map', 'Drafts'][app.destination];
       return Scaffold(
         body: SafeArea(
           child: Row(
@@ -127,7 +128,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                             ),
                             const SizedBox(width: 10),
                             Text(
-                              'Your scrapbook / $title',
+                              'Your plates / $title',
                               style: const TextStyle(
                                 fontSize: 12,
                                 color: Palette.muted,
@@ -183,6 +184,13 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                               app: app,
                               onOpen: open,
                             )
+                          : app.destination == 0
+                          ? PlateLibrary(
+                              key: ValueKey(app.scope),
+                              app: app,
+                              onCapture: capture,
+                              onMealDetails: open,
+                            )
                           : _scrapbook(wide),
                     ),
                   ],
@@ -203,7 +211,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Row(
                     children: [
-                      _bottomItem(0, Icons.menu_book_outlined, 'History'),
+                      _bottomItem(0, Icons.menu_book_outlined, 'Library'),
                       _bottomItem(1, Icons.map_outlined, 'Map'),
                       _bottomItem(2, Icons.inbox_outlined, 'Drafts'),
                       Expanded(
@@ -299,7 +307,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
         const Eyebrow('Your little world'),
         const SizedBox(height: 16),
         ...[
-          (Icons.menu_book_outlined, 'History'),
+          (Icons.menu_book_outlined, 'Library'),
           (Icons.map_outlined, 'Map'),
           (Icons.inbox_outlined, 'Drafts'),
         ].indexed.map(
@@ -727,9 +735,9 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                                               JobStatus.processing =>
                                                 'Creating cutout…',
                                               JobStatus.ready =>
-                                                'Ready to plate',
+                                                'Ready in your library',
                                               JobStatus.failed =>
-                                                'Original ready to plate',
+                                                'Needs a plate cutout',
                                             },
                                             style: const TextStyle(
                                               fontSize: 11,

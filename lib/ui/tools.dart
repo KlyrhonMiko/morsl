@@ -552,22 +552,6 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
                 icon: const Icon(Icons.refresh, size: 17),
                 label: Text(retrying ? 'Processing…' : 'Retry cutout'),
               ),
-              OutlinedButton(
-                onPressed: () async {
-                  final current =
-                      widget.app.memories
-                          .where((e) => e.id == m.id)
-                          .firstOrNull
-                          ?.copy() ??
-                      m;
-                  current.useOriginal = true;
-                  await widget.app.save(current);
-                  if (context.mounted) {
-                    Navigator.pop(context);
-                  }
-                },
-                child: const Text('Use original'),
-              ),
               TextButton.icon(
                 onPressed: () => guarded(context, () async {
                   final file = await widget.app.exportEvaluations();

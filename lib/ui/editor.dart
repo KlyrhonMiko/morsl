@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,7 +10,7 @@ import '../services/media.dart';
 import '../services/plates.dart';
 import 'plate_tools.dart';
 import 'theme.dart';
-import 'memory_card.dart';
+import 'plate_library.dart';
 import 'tools.dart';
 import 'cloud_cutouts.dart';
 import 'account_gate.dart';
@@ -31,7 +30,6 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   Timer? debounce;
   Future<void> saving = Future.value();
   String status = 'All edits saved on this device';
-  bool showPosition = false;
   bool dateEdited = false, locationEdited = false;
   bool photoChoiceEdited = false;
   bool platesDirty = false, findingPlates = false;
@@ -46,7 +44,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   void initState() {
     super.initState();
     app = ref.read(appProvider);
-    memory = widget.memory.copy();
+    memory = widget.memory.copy()..useOriginal = false;
     caption = TextEditingController(text: memory.caption);
     venue = TextEditingController(text: memory.venue);
     companions = TextEditingController(text: memory.companions.join(', '));
@@ -71,7 +69,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             memory.cutout == null &&
             memory.plates.isEmpty &&
             (current.cutout != null || current.plates.isNotEmpty)) {
-          memory.useOriginal = current.useOriginal;
+          memory.useOriginal = false;
         }
         memory.cutout = current.cutout;
         memory.original = current.original;
@@ -117,7 +115,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     if (!app.canMutate || app.scope != memory.scope) return Future.value();
     final snapshot = memory.copy();
     final didDateEdit = dateEdited, didLocationEdit = locationEdited;
-    final didPlateEdit = platesDirty, didPhotoEdit = photoChoiceEdited;
+    final didPlateEdit = platesDirty;
     saving = saving
         .catchError((Object _) {})
         .then((_) async {
@@ -134,7 +132,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             current.y = snapshot.y;
             current.scale = snapshot.scale;
             current.rotation = snapshot.rotation;
-            if (didPhotoEdit) current.useOriginal = snapshot.useOriginal;
+            current.useOriginal = false;
             if (didPlateEdit && current.original.isNotEmpty) {
               current.plates = snapshot.plates;
               current.platesEdited = true;
@@ -316,7 +314,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   Future<void> saveMemory() async {
     if (!app.canMutate || app.scope != memory.scope) return;
     debounce?.cancel();
-    memory.draft = false;
+    memory.draft = memory.plates.isEmpty && memory.cutout?.isNotEmpty != true;
     await _persist();
     if (!mounted || !app.canMutate || app.scope != memory.scope) {
       return;
@@ -335,7 +333,12 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       return;
     }
     app.navigate(0);
-    message(context, 'A little memory, kept.');
+    message(
+      context,
+      memory.draft
+          ? 'Meal details saved. Finish the cutouts in Drafts.'
+          : 'Your plates are in the library.',
+    );
     Navigator.of(context).pop();
     unawaited(app.sync());
   }
@@ -366,32 +369,10 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       : Scaffold(
           appBar: AppBar(
             title: const Text(
-              'Plating',
+              'Meal details',
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
             ),
             actions: [
-              IconButton(
-                onPressed: () async {
-                  debounce?.cancel();
-                  await _persist();
-                  if (!context.mounted) {
-                    return;
-                  }
-                  await showEvaluation(context, app, memory);
-                  final current = app.memories
-                      .where((m) => m.id == memory.id)
-                      .firstOrNull;
-                  if (current != null && mounted) {
-                    setState(() {
-                      memory.useOriginal = current.useOriginal;
-                      memory.rating = current.rating;
-                      memory.failureCategory = current.failureCategory;
-                    });
-                  }
-                },
-                tooltip: 'Evaluate cutout',
-                icon: const Icon(Icons.auto_awesome_outlined, size: 21),
-              ),
               if (!memory.draft && memory.ownsMeal)
                 IconButton(
                   onPressed: () async {
@@ -531,48 +512,29 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
               final preview = Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Eyebrow('A little moment, your way'),
-                  const SizedBox(height: 10),
                   const Handwriting(
-                    'Make yourself a memory.',
+                    'Keep the plates. Remember the meal.',
                     size: 35,
                     color: Palette.forest,
                   ),
                   const SizedBox(height: 22),
-                  if (findingPlates ||
-                      memory.job == JobStatus.processing ||
-                      memory.job == JobStatus.queued) ...[
-                    CutoutStatus(
-                      job: findingPlates ? JobStatus.processing : memory.job,
-                    ),
-                    const SizedBox(height: 16),
-                  ],
                   Center(
                     child: ConstrainedBox(
-                      constraints: BoxConstraints(maxWidth: wide ? 440 : 430),
-                      child: AspectRatio(
-                        aspectRatio: .91,
-                        child: MemoryCanvas(
-                          memory: memory,
-                          selectedPlate: selectedPlate?.id,
-                          onPlateSelected: (id) =>
-                              setState(() => selectedPlateId = id),
-                          onPlateTransform: (id, x, y, s, r) => plateChange(() {
-                            selectedPlateId = id;
-                            final plate = memory.plates.firstWhere(
-                              (p) => p.id == id,
-                            );
-                            plate.x = x;
-                            plate.y = y;
-                            plate.scale = s;
-                            plate.rotation = r;
-                          }),
-                          onTransform: (x, y, s, r) => change(() {
-                            memory.x = x;
-                            memory.y = y;
-                            memory.scale = s;
-                            memory.rotation = r;
-                          }),
+                      constraints: BoxConstraints(
+                        maxWidth: wide ? 440 : 430,
+                        maxHeight: 440,
+                      ),
+                      child: CutoutPhoto(
+                        job: findingPlates ? JobStatus.processing : memory.job,
+                        child: PlateImage(
+                          path:
+                              findingPlates ||
+                                  memory.job == JobStatus.processing ||
+                                  memory.job == JobStatus.queued
+                              ? memory.original
+                              : selectedPlate?.path ??
+                                    memory.cutout ??
+                                    memory.original,
                         ),
                       ),
                     ),
@@ -580,7 +542,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                   const SizedBox(height: 16),
                   const Center(
                     child: Text(
-                      'Drag, pinch, or use the position controls below.',
+                      'Plate cutouts will appear in your library.',
                       style: TextStyle(fontSize: 11, color: Palette.muted),
                     ),
                   ),
@@ -648,7 +610,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                   FilledButton.icon(
                     onPressed: saveMemory,
                     icon: const Icon(Icons.check_rounded, size: 18),
-                    label: const Text('Save memory'),
+                    label: const Text('Save to library'),
                   ),
                 ],
               ),
@@ -665,219 +627,9 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   Widget _controls() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      const Eyebrow('01 / Set the table'),
-      _label('Layout'),
-      Row(
-        children: ['classic', 'postcard', 'centered']
-            .map(
-              (l) => Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: OutlinedButton(
-                    onPressed: () => change(() {
-                      memory.layout = l;
-                      memory.x = 0;
-                      memory.y = 0;
-                      memory.scale = l == 'centered' ? .82 : 1;
-                      memory.rotation = 0;
-                    }),
-                    style: OutlinedButton.styleFrom(
-                      backgroundColor: memory.layout == l ? Palette.sage : null,
-                      side: BorderSide(
-                        color: memory.layout == l
-                            ? Palette.forest
-                            : Palette.line,
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 4,
-                        vertical: 12,
-                      ),
-                    ),
-                    child: Column(
-                      children: [
-                        Icon(
-                          l == 'classic'
-                              ? Icons.photo_outlined
-                              : l == 'postcard'
-                              ? Icons.web_asset_outlined
-                              : Icons.filter_center_focus,
-                          size: 22,
-                        ),
-                        const SizedBox(height: 7),
-                        Text(
-                          l[0].toUpperCase() + l.substring(1),
-                          style: const TextStyle(fontSize: 11),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            )
-            .toList(),
-      ),
-      _label('Paper background'),
-      Wrap(
-        spacing: 12,
-        children: ['cream', 'sage', 'rose', 'sand']
-            .map(
-              (b) => Semantics(
-                label: '$b paper',
-                selected: memory.background == b,
-                button: true,
-                child: InkWell(
-                  onTap: () => change(() => memory.background = b),
-                  borderRadius: BorderRadius.circular(30),
-                  child: Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: Palette.background(b),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: memory.background == b
-                            ? Palette.forest
-                            : Palette.line,
-                        width: memory.background == b ? 2 : 1,
-                      ),
-                    ),
-                    child: memory.background == b
-                        ? const Icon(
-                            Icons.check,
-                            size: 18,
-                            color: Palette.forest,
-                          )
-                        : null,
-                  ),
-                ),
-              ),
-            )
-            .toList(),
-      ),
-      _label('Your photo'),
-      Wrap(
-        spacing: 8,
-        children: [
-          ChoiceChip(
-            label: Text(
-              'Original photo',
-              style: TextStyle(
-                color: !memory.displaysCutout ? Colors.white : Palette.ink,
-              ),
-            ),
-            selected: !memory.displaysCutout,
-            onSelected: (_) => change(() {
-              photoChoiceEdited = true;
-              memory.useOriginal = true;
-            }),
-          ),
-          ChoiceChip(
-            label: Text(
-              memory.cutout == null && memory.plates.isEmpty
-                  ? 'Cutout not ready'
-                  : 'Food cutouts',
-              style: TextStyle(
-                color: memory.cutout == null && memory.plates.isEmpty
-                    ? Palette.muted
-                    : memory.displaysCutout
-                    ? Colors.white
-                    : Palette.ink,
-              ),
-            ),
-            selected: memory.displaysCutout,
-            onSelected: memory.cutout == null && memory.plates.isEmpty
-                ? null
-                : (_) => change(() {
-                    photoChoiceEdited = true;
-                    memory.useOriginal = false;
-                  }),
-          ),
-        ],
-      ),
-      if (memory.job == JobStatus.failed)
-        Padding(
-          padding: const EdgeInsets.only(top: 10),
-          child: Text(
-            'Select a missed plate below. You can edit its edges offline.',
-            style: const TextStyle(fontSize: 11, color: Palette.muted),
-          ),
-        ),
+      _label('Plate cutouts'),
       _plateControls(),
-      Wrap(
-        spacing: 8,
-        children: [
-          TextButton.icon(
-            onPressed: () => setState(() => showPosition = !showPosition),
-            icon: const Icon(Icons.tune, size: 16),
-            label: const Text(
-              'Position controls',
-              style: TextStyle(fontSize: 11),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              final plate = selectedPlate;
-              if (plate != null) {
-                plateChange(() {
-                  plate.x = .2;
-                  plate.y = .15;
-                  plate.scale = .6;
-                  plate.rotation = 0;
-                });
-              } else {
-                change(() {
-                  memory.x = 0;
-                  memory.y = 0;
-                  memory.scale = 1;
-                  memory.rotation = 0;
-                });
-              }
-            },
-            child: const Text('Reset layout', style: TextStyle(fontSize: 11)),
-          ),
-        ],
-      ),
-      if (showPosition && selectedPlate != null) ...[
-        _slider('Plate horizontal position', selectedPlate!.x, -.5, 1, (v) {
-          platesDirty = true;
-          selectedPlate!.x = v;
-        }),
-        _slider('Plate vertical position', selectedPlate!.y, -.5, 1, (v) {
-          platesDirty = true;
-          selectedPlate!.y = v;
-        }),
-        _slider('Plate size', selectedPlate!.scale, .15, 1.4, (v) {
-          platesDirty = true;
-          selectedPlate!.scale = v;
-        }),
-        _slider('Plate rotation', selectedPlate!.rotation, -math.pi, math.pi, (
-          v,
-        ) {
-          platesDirty = true;
-          selectedPlate!.rotation = v;
-        }),
-      ] else if (showPosition) ...[
-        _slider(
-          'Horizontal position',
-          memory.x,
-          -.35,
-          .35,
-          (v) => memory.x = v,
-        ),
-        _slider('Vertical position', memory.y, -.35, .35, (v) => memory.y = v),
-        _slider('Image scale', memory.scale, .4, 1.6, (v) => memory.scale = v),
-        _slider(
-          'Image rotation',
-          memory.rotation,
-          -math.pi,
-          math.pi,
-          (v) => memory.rotation = v,
-        ),
-      ],
-      const SizedBox(height: 22),
-      const Divider(),
       const SizedBox(height: 20),
-      const Eyebrow('02 / Keep the feeling'),
       _label('A few words'),
       TextField(
         controller: caption,
@@ -932,7 +684,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       ),
       const Divider(),
       const SizedBox(height: 20),
-      const Eyebrow('03 / Remember the details'),
+
       _label('Where was it?'),
       TextField(
         controller: venue,
@@ -1038,7 +790,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       children: [
         if (memory.plates.isNotEmpty) ...[
           Text(
-            '${memory.plates.length} separate plates - select one to move or edit',
+            '${memory.plates.length} separate plates - select one to edit its edges',
             style: const TextStyle(color: Palette.muted, fontSize: 12),
           ),
           Wrap(
@@ -1109,32 +861,5 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
         ),
       ],
     ),
-  );
-
-  Widget _slider(
-    String label,
-    double value,
-    double min,
-    double max,
-    void Function(double) set,
-  ) => Row(
-    children: [
-      SizedBox(
-        width: 112,
-        child: Text(
-          label,
-          style: const TextStyle(fontSize: 10, color: Palette.muted),
-        ),
-      ),
-      Expanded(
-        child: Slider(
-          value: value.clamp(min, max),
-          min: min,
-          max: max,
-          label: value.toStringAsFixed(2),
-          onChanged: (v) => change(() => set(v)),
-        ),
-      ),
-    ],
   );
 }
