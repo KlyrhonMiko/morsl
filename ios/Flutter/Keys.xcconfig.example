@@ -1,2 +1,0 @@
-// Copy to Keys.xcconfig (gitignored) and restrict this key to your iOS bundle ID.
-GOOGLE_MAPS_API_KEY = YOUR_IOS_MAPS_KEY

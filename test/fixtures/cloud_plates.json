@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "model": "sam3",
+  "maskFormat": "cropped-rgba",
+  "imageSize": [
+    10,
+    20
+  ],
+  "plates": [
+    {
+      "bounds": [
+        0.2,
+        0.25,
+        0.5,
+        0.5
+      ],
+      "mask": "iVBORw0KGgoAAAANSUhEUgAAAAUAAAAKCAYAAAB8OZQwAAAAI0lEQVR4nGP8////fwY0wIQuQFCQEYpxq2SB0iiWkW4RYUEApngFEwZAByEAAAAASUVORK5CYII=",
+      "score": 0.9
+    }
+  ]
+}

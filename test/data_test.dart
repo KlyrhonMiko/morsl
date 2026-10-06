@@ -13,6 +13,7 @@ import 'package:morsl/services/cloud.dart';
 import 'package:morsl/services/media.dart';
 import 'package:morsl/services/plates.dart';
 import 'package:morsl/services/reminders.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class FakeEngine implements SegmentationEngine {
   bool fails = true;
@@ -23,12 +24,10 @@ class FakeEngine implements SegmentationEngine {
   @override
   Future<bool> available() async => true;
   @override
-  Future<bool> prepare() async => true;
-  @override
   Future<String> process(String original, String output) async {
     if (!started.isCompleted) started.complete();
     if (wait != null) await wait!.future;
-    if (fails) throw StateError('No model available offline');
+    if (fails) throw StateError('Segmentation unavailable');
     await File(original).copy(output);
     return output;
   }
@@ -59,6 +58,10 @@ class TestMedia extends MediaStore {
 class FakeCloud extends CloudService {
   FakeCloud(super.client, super.media);
   String current = 'account-a';
+  @override
+  bool get signedInWithGoogle => true;
+  @override
+  bool get configured => true;
   bool failPush = true;
   bool failPull = false;
   final Map<String, Memory> remote = {};
@@ -85,6 +88,16 @@ class FakeCloud extends CloudService {
   Future<Set<String>> authorizedIds() async => remote.keys.toSet();
 }
 
+// Existing persistence fixtures use "guest" as their isolated test scope.
+// They now exercise a signed-in controller rather than authorizing real guests.
+class TestGoogleCloud extends CloudService {
+  TestGoogleCloud(super.client, super.media);
+  @override
+  String? get account => 'guest';
+  @override
+  bool get signedInWithGoogle => true;
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory temp;
@@ -108,6 +121,41 @@ void main() {
     createdAt: DateTime(2026, 10, 5),
     original: '${temp.path}/original.jpg',
   );
+
+  test(
+    'guests cannot capture, edit, extract, bookmark, export, or change settings',
+    () async {
+      final engine = FakeEngine();
+      final app = MorslController(
+        repository: repo,
+        media: media,
+        engine: engine,
+        cloud: CloudService(null, media),
+        reminders: DraftReminders(),
+      );
+      final memory = meal('guest');
+      await repo.save(memory, enqueue: false);
+      expect(app.canMutate, false);
+      await expectLater(app.capture(ImageSource.camera), throwsStateError);
+      await expectLater(
+        app.importPhoto(XFile('missing.png')),
+        throwsStateError,
+      );
+      await expectLater(app.save(memory), throwsStateError);
+      await expectLater(app.retry(memory), throwsStateError);
+      await expectLater(app.toggleBookmark(memory), throwsStateError);
+      await expectLater(app.rate(memory, 'good', null), throwsStateError);
+      await expectLater(app.exportEvaluations(), throwsStateError);
+      await expectLater(app.setReminder(true, 20, 0), throwsStateError);
+      await expectLater(app.setCloudCutoutsAllowed(true), throwsStateError);
+      await expectLater(app.clearExamples(), throwsStateError);
+      await expectLater(app.sync(manual: true), throwsStateError);
+      await app.processQueue();
+      expect(engine.started.isCompleted, false);
+      expect((await repo.list('guest')).single.bookmarked, memory.bookmarked);
+      app.dispose();
+    },
+  );
   MorslController controller(SegmentationEngine engine, CloudService cloud) =>
       MorslController(
         repository: repo,
@@ -116,6 +164,51 @@ void main() {
         cloud: cloud,
         reminders: DraftReminders(),
       );
+
+  test(
+    'OAuth callback errors are handled and do not expose authorization codes',
+    () async {
+      final client = SupabaseClient(
+        'https://example.supabase.co',
+        'test-key',
+        authOptions: const AuthClientOptions(autoRefreshToken: false),
+      );
+      final app = controller(FakeEngine(), CloudService(client, media));
+      await app.initialize(seedExamples: false);
+      // Exercise the same error stream used by Supabase's deep-link handler.
+      // ignore: invalid_use_of_internal_member
+      client.auth.notifyException(
+        const AuthException(
+          'Unable to exchange external code: private-oauth-code',
+          code: 'server_error',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(app.authError, contains('Google sign-in could not be completed'));
+      expect(app.authError, isNot(contains('private-oauth-code')));
+      expect(app.canMutate, false);
+      app.dispose();
+      await client.dispose();
+    },
+  );
+
+  test('switching accounts discards an in-flight extraction result', () async {
+    final cloud = FakeCloud(null, media);
+    final memory = meal('account-a');
+    await repo.save(memory, enqueue: false);
+    final engine = FakePlateEngine()..wait = Completer<void>();
+    final app = controller(engine, cloud);
+    final processing = app.processQueue();
+    await engine.started.future;
+    cloud.current = 'account-b';
+    engine.wait!.complete();
+    await processing;
+    final saved = (await repo.list('account-a')).single;
+    expect(saved.job, JobStatus.queued);
+    expect(saved.plates, isEmpty);
+    expect(saved.cutout, isNull);
+    app.dispose();
+  });
 
   test('durable draft and exact composition survive database reopen', () async {
     final source = File('${temp.path}/camera-cache.jpg');
@@ -152,7 +245,7 @@ void main() {
     () async {
       final m = meal('guest')..job = JobStatus.processing;
       await repo.save(m);
-      final app = controller(FakeEngine(), CloudService(null, media));
+      final app = controller(FakeEngine(), TestGoogleCloud(null, media));
       await app.processQueue();
       final restored = (await repo.list('guest')).single;
       expect(restored.job, JobStatus.failed);
@@ -176,7 +269,7 @@ void main() {
     final engine = FakeEngine()
       ..fails = false
       ..wait = Completer<void>();
-    final app = controller(engine, CloudService(null, media));
+    final app = controller(engine, TestGoogleCloud(null, media));
     final processing = app.processQueue();
     await engine.started.future;
     await repo.mutate(m.id, 'guest', (current) {
@@ -205,7 +298,7 @@ void main() {
       final engine = FakeEngine()
         ..fails = false
         ..wait = Completer<void>();
-      final app = controller(engine, CloudService(null, media));
+      final app = controller(engine, TestGoogleCloud(null, media));
       final processing = app.processQueue();
       await engine.started.future;
       await repo.mutate(m.id, 'guest', (current) => current.useOriginal = true);
@@ -224,7 +317,7 @@ void main() {
   test(
     'bundled examples use durable transparent cutouts on first launch',
     () async {
-      final app = controller(FakeEngine(), CloudService(null, media));
+      final app = controller(FakeEngine(), TestGoogleCloud(null, media));
       await app.initialize();
       final examples = (await repo.list(
         'guest',
@@ -252,7 +345,7 @@ void main() {
         ..caption = 'My edited caption'
         ..scale = .73;
       await repo.save(m);
-      final app = controller(FakeEngine(), CloudService(null, media));
+      final app = controller(FakeEngine(), TestGoogleCloud(null, media));
       await app.initialize();
       final restored = (await repo.list('guest')).single;
       expect(restored.displaysCutout, true);
@@ -260,7 +353,7 @@ void main() {
       expect(restored.scale, .73);
       app.dispose();
       await repo.remove(m.id, 'guest');
-      final next = controller(FakeEngine(), CloudService(null, media));
+      final next = controller(FakeEngine(), TestGoogleCloud(null, media));
       await next.initialize();
       expect(await repo.list('guest'), isEmpty);
       next.dispose();
@@ -274,7 +367,7 @@ void main() {
       final engine = FakeEngine()
         ..fails = false
         ..wait = Completer<void>();
-      final app = controller(engine, CloudService(null, media));
+      final app = controller(engine, TestGoogleCloud(null, media));
       final processing = app.processQueue();
       await engine.started.future;
       await repo.save(
@@ -389,7 +482,7 @@ void main() {
       final memory = meal('guest');
       await repo.save(memory);
       final engine = FakePlateEngine()..wait = Completer<void>();
-      final app = controller(engine, CloudService(null, media));
+      final app = controller(engine, TestGoogleCloud(null, media));
       final processing = app.processQueue();
       await engine.started.future;
       await repo.mutate(memory.id, 'guest', (current) {

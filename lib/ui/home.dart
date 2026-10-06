@@ -9,6 +9,7 @@ import 'memory_card.dart';
 import 'editor.dart';
 import 'map_screen.dart';
 import 'tools.dart';
+import 'account_gate.dart';
 
 class MorslHome extends ConsumerStatefulWidget {
   const MorslHome({super.key});
@@ -20,6 +21,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
     with WidgetsBindingObserver {
   late MorslController app;
   late String accountScope;
+  String? lastAuthError;
   String search = '', companion = 'All people';
   bool onlyBookmarks = false, showArchived = false;
   DateTimeRange? dates;
@@ -34,6 +36,12 @@ class _MorslHomeState extends ConsumerState<MorslHome>
 
   void _changed() {
     if (mounted) {
+      if (app.authError != null && app.authError != lastAuthError) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(app.authError!)));
+      }
+      lastAuthError = app.authError;
       setState(() {
         if (accountScope != app.scope) {
           accountScope = app.scope;
@@ -58,6 +66,14 @@ class _MorslHomeState extends ConsumerState<MorslHome>
   }
 
   void open(Memory m) {
+    if (!app.canMutate || m.scope != app.scope) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => BrowseMemory(memory: m, app: app),
+        ),
+      );
+      return;
+    }
     app.repository.event(m.scope, 'memory_opened', {
       'mealId': m.id,
       'draft': m.draft,
@@ -376,7 +392,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
               Expanded(
                 child: Text(
                   app.cloud.account == null
-                      ? 'Kept safely on this device'
+                      ? 'Browse only · Sign in with Google'
                       : app.operations.isEmpty
                       ? 'All memories backed up'
                       : '${app.operations.length} pending backup',
@@ -730,13 +746,13 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                                     ),
                                     onOpen: () => open(m),
                                     onBookmark: () async {
-                                      await app.repository.mutate(
-                                        m.id,
-                                        m.scope,
-                                        (current) => current.bookmarked =
-                                            !current.bookmarked,
-                                      );
-                                      await app.reload();
+                                      if (!await requireGoogleSignIn(
+                                        context,
+                                        app,
+                                      )) {
+                                        return;
+                                      }
+                                      await app.toggleBookmark(m);
                                     },
                                   ),
                                 ],

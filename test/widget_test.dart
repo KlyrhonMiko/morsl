@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:morsl/controller.dart';
 import 'package:morsl/data/database.dart';
 import 'package:morsl/data/models.dart';
@@ -19,15 +20,35 @@ import 'package:morsl/services/reminders.dart';
 import 'package:morsl/ui/editor.dart';
 import 'package:morsl/ui/theme.dart';
 import 'package:morsl/ui/home.dart';
+import 'package:morsl/ui/map_screen.dart';
+
+class LocalTestTiles extends TileProvider {
+  @override
+  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) =>
+      FileImage(File('assets/images/salad.jpg'));
+}
 
 class SwitchingCloud extends CloudService {
   SwitchingCloud(super.client, super.media);
-  String? current;
+  String? current = 'guest';
+  @override
+  bool get signedInWithGoogle => current != null;
   @override
   String? get account => current;
 }
 
-class AutomaticDishEngine extends NativeSegmentation {
+class UnavailableSegmentation implements SegmentationEngine {
+  @override
+  Future<bool> available() async => false;
+  @override
+  Future<String> process(String original, String output) async =>
+      throw StateError('Segmentation unavailable');
+  @override
+  String get runtime => 'test segmentation';
+}
+
+class AutomaticDishEngine extends UnavailableSegmentation
+    implements MultiSubjectSegmentationEngine {
   AutomaticDishEngine(this.path);
   final String path;
   @override
@@ -67,7 +88,7 @@ void main() {
     app = MorslController(
       repository: MemoryRepository(db),
       media: media,
-      engine: NativeSegmentation(),
+      engine: UnavailableSegmentation(),
       cloud: SwitchingCloud(null, media),
       reminders: DraftReminders(),
     );
@@ -129,6 +150,69 @@ void main() {
   Widget host(Widget child) => ProviderScope(
     overrides: [appProvider.overrideWithValue(app)],
     child: child,
+  );
+
+  testWidgets(
+    'Geoapify map opens a meal and keeps attribution and offline access',
+    (tester) async {
+      final memory = app.memories.first
+        ..latitude = 14.55
+        ..longitude = 121.02
+        ..locationConfirmed = true;
+      Memory? opened;
+      await tester.pumpWidget(
+        host(
+          MaterialApp(
+            home: Scaffold(
+              body: MealMap(
+                app: app,
+                apiKey: 'test-key',
+                tileProvider: LocalTestTiles(),
+                onOpen: (meal) => opened = meal,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(FlutterMap), findsOneWidget);
+      expect(find.text('Powered by Geoapify'), findsOneWidget);
+      expect(find.text('© OpenStreetMap contributors'), findsOneWidget);
+      await tester.tap(find.byTooltip(memory.venue));
+      expect(opened?.id, memory.id);
+      await tester.tap(find.text('Use offline list'));
+      await tester.pumpAndSettle();
+      expect(find.byType(FlutterMap), findsNothing);
+      expect(find.textContaining('Illustrated preview'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'guest capture asks for Google and an editor route remains browse-only',
+    (tester) async {
+      (app.cloud as SwitchingCloud).current = null;
+      final memory = app.memories.first;
+      await tester.pumpWidget(host(const MorslApp()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Capture a meal').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Make it your little world'), findsOneWidget);
+      expect(find.text('Keep browsing'), findsOneWidget);
+      await tester.tap(find.text('Keep browsing'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(
+        host(MaterialApp(home: PlatingEditor(memory: memory))),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Sign in with Google to start your own scrapbook.'),
+        findsOneWidget,
+      );
+      expect(find.text('Save memory'), findsNothing);
+      expect(find.text('Separate dishes'), findsNothing);
+      expect(find.byType(TextField), findsNothing);
+    },
   );
 
   testWidgets('history search and primary destinations work on a small phone', (

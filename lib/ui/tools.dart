@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
+import 'geoapify_attribution.dart';
 
 import '../controller.dart';
 import '../data/models.dart';
 import 'theme.dart';
+import 'cloud_cutouts.dart';
+import 'account_gate.dart';
 
 void message(BuildContext context, String text) {
   ScaffoldMessenger.of(context).showSnackBar(
@@ -63,6 +66,7 @@ Future<void> showCapture(
   MorslController app,
   void Function(Memory) onOpen,
 ) async {
+  if (!await requireGoogleSignIn(context, app) || !context.mounted) return;
   final choice = await showModalBottomSheet<(ImageSource, bool)>(
     context: context,
     isScrollControlled: true,
@@ -73,6 +77,12 @@ Future<void> showCapture(
     return;
   }
   await guarded(context, () async {
+    if (app.usesCloudCutouts &&
+        app.cloudCutoutsSignedIn &&
+        !app.cloudCutoutsDecided) {
+      await requestCloudCutouts(context, app);
+      if (!context.mounted) return;
+    }
     final m = await app.capture(
       choice.$1,
       locate: choice.$2 && choice.$1 == ImageSource.camera,
@@ -352,8 +362,8 @@ class _VenueSheetState extends State<VenueSheet> {
             ),
           ...candidates.map(
             (c) => ListTile(
-              title: Text(c['displayName']?['text'] ?? 'Restaurant'),
-              subtitle: Text(c['formattedAddress'] ?? ''),
+              title: Text(c['name'] ?? 'Restaurant or cafe'),
+              subtitle: Text(c['address'] ?? ''),
               trailing: place == c['id']
                   ? const Icon(
                       Icons.check_circle_outline,
@@ -376,7 +386,7 @@ class _VenueSheetState extends State<VenueSheet> {
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 12),
               child: Text(
-                'Google Maps · Suggestions shown live. Only the selected place ID is saved; your venue label and coordinates are your own.',
+                'Suggestions shown live. Only the selected place ID is saved; your venue label and coordinates are your own.',
                 style: TextStyle(fontSize: 10, color: Palette.muted),
               ),
             ),
@@ -388,19 +398,7 @@ class _VenueSheetState extends State<VenueSheet> {
               child: const Text('Confirm venue'),
             ),
           ),
-          ...candidates
-              .expand(
-                (c) => List<Map<String, dynamic>>.from(c['attributions'] ?? []),
-              )
-              .map(
-                (a) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Text(
-                    '${a['provider'] ?? a['displayName'] ?? ''} ${a['providerUri'] ?? a['uri'] ?? ''}',
-                    style: const TextStyle(fontSize: 10, color: Palette.muted),
-                  ),
-                ),
-              ),
+          if (candidates.isNotEmpty) const GeoapifyAttribution(),
         ],
       ),
     ),
@@ -568,6 +566,7 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
               TextButton.icon(
                 onPressed: () => guarded(context, () async {
                   final file = await widget.app.exportEvaluations();
+                  widget.app.requireGoogleAccount();
                   if (context.mounted) {
                     await shareFile(context, file, 'morsl cutout evaluations');
                   }
@@ -703,7 +702,6 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late MorslController app;
   late String accountScope;
-  final email = TextEditingController(), password = TextEditingController();
   bool working = false;
   @override
   void initState() {
@@ -718,8 +716,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       setState(() {
         if (accountScope != app.scope) {
           accountScope = app.scope;
-          email.clear();
-          password.clear();
         }
       });
     }
@@ -728,35 +724,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   void dispose() {
     app.removeListener(changed);
-    email.dispose();
-    password.dispose();
     super.dispose();
   }
 
-  Future<void> auth(bool signup) async {
+  Future<void> auth() async {
     setState(() => working = true);
-    await guarded(context, () async {
-      if (signup) {
-        await app.cloud.client!.auth.signUp(
-          email: email.text.trim(),
-          password: password.text,
-        );
-        if (mounted) {
-          message(
-            context,
-            'Account created. Check your email if confirmation is enabled.',
-          );
-        }
-      } else {
-        await app.cloud.client!.auth.signInWithPassword(
-          email: email.text.trim(),
-          password: password.text,
-        );
-      }
-    });
-    if (mounted) {
-      setState(() => working = false);
-    }
+    await guarded(context, app.signInWithGoogle);
+    if (mounted) setState(() => working = false);
   }
 
   @override
@@ -779,12 +753,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               const SizedBox(height: 12),
               const Text(
-                'Local first. A backup when you’re ready.',
+                'Browse freely. Sign in with Google to capture, edit, and share.',
                 style: TextStyle(color: Palette.muted),
               ),
               const SizedBox(height: 30),
               const Eyebrow('Your account'),
               const SizedBox(height: 16),
+              if (app.authError != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Text(
+                    app.authError!,
+                    style: const TextStyle(color: Palette.terracotta),
+                  ),
+                ),
               if (!app.cloud.configured)
                 Container(
                   padding: const EdgeInsets.all(18),
@@ -793,40 +775,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: const Text(
-                    'You’re using morsl on this device. Cloud backup and meal invitations will be available when this beta is connected to its account service.',
+                    'You can browse the example scrapbook. Google sign-in must be configured before capturing, editing, or sharing meals.',
                     style: TextStyle(fontSize: 13, color: Palette.forest),
                   ),
                 ),
-              if (app.cloud.configured && app.cloud.account == null) ...[
-                TextField(
-                  controller: email,
-                  keyboardType: TextInputType.emailAddress,
-                  autofillHints: const [AutofillHints.email],
-                  decoration: const InputDecoration(labelText: 'Email'),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: password,
-                  obscureText: true,
-                  autofillHints: const [AutofillHints.password],
-                  decoration: const InputDecoration(labelText: 'Password'),
-                ),
-                const SizedBox(height: 14),
-                Wrap(
-                  spacing: 12,
-                  children: [
-                    FilledButton(
-                      onPressed: working ? null : () => auth(false),
-                      child: Text(working ? 'One moment…' : 'Sign in'),
-                    ),
-                    OutlinedButton(
-                      onPressed: working ? null : () => auth(true),
-                      child: const Text('Create account'),
-                    ),
-                  ],
+              if (app.cloud.configured && !app.canMutate) ...[
+                FilledButton(
+                  onPressed: working ? null : auth,
+                  child: Text(
+                    working ? 'Opening Google…' : 'Continue with Google',
+                  ),
                 ),
               ],
-              if (app.cloud.account != null) ...[
+              if (app.canMutate) ...[
                 Text(
                   app.cloud.email ?? 'Signed in',
                   style: const TextStyle(fontWeight: FontWeight.w600),
@@ -889,10 +850,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       child: const Text('Add local memories'),
                     ),
                     TextButton(
-                      onPressed: () => guarded(
-                        context,
-                        () => app.cloud.client!.auth.signOut(),
-                      ),
+                      onPressed: () => guarded(context, app.cloud.signOut),
                       child: const Text('Sign out'),
                     ),
                   ],
@@ -901,6 +859,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(height: 30),
               const Divider(),
               const SizedBox(height: 24),
+              if (app.usesCloudCutouts) ...[
+                const Eyebrow('Photo processing'),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Cloud cutouts'),
+                  subtitle: Text(
+                    app.cloudCutoutsSignedIn
+                        ? 'Upload meal photos to Modal for plate extraction. Manual editing works offline.'
+                        : 'Sign in to enable cloud cutouts. Manual editing works offline.',
+                  ),
+                  value: app.cloudCutoutsAllowed,
+                  onChanged: !app.cloudCutoutsSignedIn
+                      ? null
+                      : (allowed) => guarded(context, () async {
+                          if (allowed) {
+                            await requestCloudCutouts(context, app);
+                          } else {
+                            await app.setCloudCutoutsAllowed(false);
+                          }
+                        }),
+                ),
+                const SizedBox(height: 24),
+              ],
               const Eyebrow('A gentle nudge'),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
@@ -913,32 +894,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   style: TextStyle(fontSize: 11, color: Palette.muted),
                 ),
                 value: app.reminderEnabled,
-                onChanged: (v) => guarded(
-                  context,
-                  () =>
-                      app.setReminder(v, app.reminderHour, app.reminderMinute),
-                ),
+                onChanged: !app.canMutate
+                    ? null
+                    : (v) => guarded(
+                        context,
+                        () => app.setReminder(
+                          v,
+                          app.reminderHour,
+                          app.reminderMinute,
+                        ),
+                      ),
               ),
               OutlinedButton.icon(
-                onPressed: () async {
-                  final time = await showTimePicker(
-                    context: context,
-                    initialTime: TimeOfDay(
-                      hour: app.reminderHour,
-                      minute: app.reminderMinute,
-                    ),
-                  );
-                  if (time != null && context.mounted) {
-                    await guarded(
-                      context,
-                      () => app.setReminder(
-                        app.reminderEnabled,
-                        time.hour,
-                        time.minute,
-                      ),
-                    );
-                  }
-                },
+                onPressed: !app.canMutate
+                    ? null
+                    : () async {
+                        final time = await showTimePicker(
+                          context: context,
+                          initialTime: TimeOfDay(
+                            hour: app.reminderHour,
+                            minute: app.reminderMinute,
+                          ),
+                        );
+                        if (time != null && context.mounted) {
+                          await guarded(
+                            context,
+                            () => app.setReminder(
+                              app.reminderEnabled,
+                              time.hour,
+                              time.minute,
+                            ),
+                          );
+                        }
+                      },
                 icon: const Icon(Icons.schedule, size: 17),
                 label: Text(
                   TimeOfDay(
@@ -981,7 +969,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   MaterialPageRoute(builder: (_) => const InboxScreen()),
                 ),
               ),
-              if (app.memories.any((m) => m.demo))
+              if (app.canMutate && app.memories.any((m) => m.demo))
                 TextButton(
                   onPressed: () => guarded(context, app.clearExamples),
                   child: const Text('Clear example scrapbook'),
@@ -1052,38 +1040,24 @@ class _BetaToolsScreenState extends ConsumerState<BetaToolsScreen> {
         ),
         const SizedBox(height: 12),
         Text(
-          app.modelReady
-              ? 'Model ready for offline extraction'
-              : 'Model is not ready on this device',
+          !app.cloudCutoutsSignedIn
+              ? 'Sign in for cloud extraction'
+              : !app.cloudCutoutsAllowed
+              ? 'Cloud extraction is off'
+              : app.modelReady
+              ? 'Cloud extraction is available'
+              : 'Cloud availability has not been confirmed',
           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
         ),
-        if (app.preparing) ...[
-          const SizedBox(height: 12),
-          const LinearProgressIndicator(),
-          const SizedBox(height: 8),
-          const Text(
-            'One-time download. Keep the app open; photos stay on your phone.',
-          ),
-        ],
         const SizedBox(height: 12),
         Wrap(
           spacing: 10,
           runSpacing: 10,
           children: [
-            FilledButton.icon(
-              onPressed: app.preparing
-                  ? null
-                  : () => guarded(context, app.prepareModel),
-              icon: const Icon(Icons.download_outlined, size: 18),
-              label: Text(
-                app.preparing
-                    ? 'Downloading dish models…'
-                    : 'Download dish models · 249 MB',
-              ),
-            ),
             OutlinedButton.icon(
               onPressed: () => guarded(context, () async {
                 final file = await app.exportEvaluations();
+                app.requireGoogleAccount();
                 if (context.mounted) {
                   await shareFile(context, file, 'morsl AI evaluations');
                 }

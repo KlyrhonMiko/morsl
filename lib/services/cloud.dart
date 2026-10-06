@@ -1,22 +1,100 @@
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/models.dart';
+import 'google_account.dart';
 import 'media.dart';
 import 'plates.dart';
 
 class CloudService {
-  CloudService(this.client, this.media);
+  CloudService(
+    this.client,
+    this.media, {
+    GoogleAccountPicker? googleAccountPicker,
+  }) : _googleAccountPicker =
+           googleAccountPicker ??
+           (defaultTargetPlatform == TargetPlatform.android
+               ? NativeGoogleAccountPicker()
+               : null);
   final SupabaseClient? client;
   final MediaStore media;
+  final GoogleAccountPicker? _googleAccountPicker;
+  Future<void>? _signIn;
   bool get configured => client != null;
   String? get account => client?.auth.currentUser?.id;
   String? get email => client?.auth.currentUser?.email;
+  bool get signedInWithGoogle {
+    final user = client?.auth.currentUser;
+    if (user == null || user.isAnonymous) return false;
+    final providers = user.appMetadata['providers'];
+    return user.appMetadata['provider'] == 'google' ||
+        (providers is List && providers.contains('google'));
+  }
+
+  Future<void> signInWithGoogle() async {
+    if (_signIn != null) return _signIn!;
+    final pending = _signInWithGoogle();
+    _signIn = pending;
+    try {
+      await pending;
+    } finally {
+      _signIn = null;
+    }
+  }
+
+  Future<void> _signInWithGoogle() async {
+    final auth = client?.auth;
+    if (auth == null) throw StateError('Google sign-in is not configured.');
+    final picker = _googleAccountPicker;
+    if (picker != null) {
+      final token = await picker.pickAccount();
+      if (token == null) {
+        return; // Closing the picker leaves the guest unchanged.
+      }
+      try {
+        await auth.signInWithIdToken(
+          provider: OAuthProvider.google,
+          idToken: token,
+        );
+      } on AuthException {
+        throw StateError(
+          'Google sign-in could not be completed. Please try again.',
+        );
+      }
+      return;
+    }
+    final opened = await auth.signInWithOAuth(
+      OAuthProvider.google,
+      redirectTo: 'com.morsl.app://login-callback',
+      queryParams: {'prompt': 'select_account'},
+    );
+    if (!opened) {
+      throw StateError('Could not open Google sign-in. Please retry.');
+    }
+  }
+
+  Future<void> signOut() async {
+    // Clear Supabase first so an SDK failure cannot leave app access enabled.
+    await client?.auth.signOut();
+    try {
+      await _googleAccountPicker?.signOut();
+    } catch (_) {
+      // Google picker cleanup must not undo a successful Supabase sign-out.
+    }
+  }
+
+  void requireGoogleAccount() {
+    if (!signedInWithGoogle || account == null) {
+      throw StateError('Sign in with Google to make changes.');
+    }
+  }
 
   Future<Map<String, dynamic>> push(Memory memory) async {
+    requireGoogleAccount();
     final c = client!;
     final payload = memory.toJson();
     payload['plates'] = memory.plates
@@ -111,19 +189,34 @@ class CloudService {
 
   Future<List<Map<String, dynamic>>> invitations() async =>
       List<Map<String, dynamic>>.from(await client!.rpc('my_invitations'));
-  Future<void> invite(String meal, String email) => client!.rpc(
-    'invite_to_meal',
-    params: {'meal': meal, 'recipient_email': email.trim()},
-  );
-  Future<void> respond(String id, bool accept) => client!.rpc(
-    'respond_to_invitation',
-    params: {'invitation': id, 'accept': accept},
-  );
-  Future<void> leave(String meal) =>
-      client!.rpc('leave_meal', params: {'meal': meal});
-  Future<void> deleteMeal(String meal) =>
-      client!.rpc('delete_meal', params: {'meal': meal});
+  Future<void> invite(String meal, String email) async {
+    requireGoogleAccount();
+    await client!.rpc(
+      'invite_to_meal',
+      params: {'meal': meal, 'recipient_email': email.trim()},
+    );
+  }
+
+  Future<void> respond(String id, bool accept) async {
+    requireGoogleAccount();
+    await client!.rpc(
+      'respond_to_invitation',
+      params: {'invitation': id, 'accept': accept},
+    );
+  }
+
+  Future<void> leave(String meal) async {
+    requireGoogleAccount();
+    await client!.rpc('leave_meal', params: {'meal': meal});
+  }
+
+  Future<void> deleteMeal(String meal) async {
+    requireGoogleAccount();
+    await client!.rpc('delete_meal', params: {'meal': meal});
+  }
+
   Future<void> removeAsset(Memory memory) async {
+    requireGoogleAccount();
     final paths = await client!
         .from('meal_assets')
         .select('original,cutout,thumbnail')
@@ -142,6 +235,7 @@ class CloudService {
   }
 
   Future<List<Map<String, dynamic>>> venues(double lat, double lng) async {
+    requireGoogleAccount();
     final response = await client!.functions.invoke(
       'nearby-venues',
       body: {'latitude': lat, 'longitude': lng},

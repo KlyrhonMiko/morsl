@@ -2,14 +2,21 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>FlutterDeepLinkingEnabled</key>
+    <false/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLSchemes</key>
+            <array><string>com.morsl.app</string></array>
+        </dict>
+    </array>
     <key>NSCameraUsageDescription</key>
     <string>Capture a meal for your personal morsl scrapbook.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Choose a meal photo to keep as a memory.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Optionally save an approximate meal location for you to confirm later.</string>
-    <key>GMSApiKey</key>
-    <string>$(GOOGLE_MAPS_API_KEY)</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

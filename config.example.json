@@ -1,5 +1,7 @@
 {
   "SUPABASE_URL": "https://YOUR_PROJECT.supabase.co",
   "SUPABASE_ANON_KEY": "YOUR_PUBLISHABLE_CLIENT_KEY",
-  "GOOGLE_MAPS_API_KEY": "YOUR_RESTRICTED_MOBILE_MAPS_KEY"
+  "GOOGLE_WEB_CLIENT_ID": "YOUR_WEB_CLIENT_ID.apps.googleusercontent.com",
+  "GEOAPIFY_MAPS_API_KEY": "YOUR_GEOAPIFY_MAP_TILES_KEY",
+  "SEGMENTATION_URL": "https://klyrhonmiko--sam3-deployment-segment.modal.run"
 }

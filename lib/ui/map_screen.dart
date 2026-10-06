@@ -1,16 +1,25 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../controller.dart';
 import '../data/models.dart';
 import 'theme.dart';
+import 'geoapify_attribution.dart';
 
 class MealMap extends StatefulWidget {
-  const MealMap({super.key, required this.app, required this.onOpen});
+  const MealMap({
+    super.key,
+    required this.app,
+    required this.onOpen,
+    this.apiKey = const String.fromEnvironment('GEOAPIFY_MAPS_API_KEY'),
+    this.tileProvider,
+  });
   final MorslController app;
   final void Function(Memory) onOpen;
+  final String apiKey;
+  final TileProvider? tileProvider;
   @override
   State<MealMap> createState() => _MealMapState();
 }
@@ -19,6 +28,7 @@ class _MealMapState extends State<MealMap> {
   bool bookmarked = false;
   String companion = 'Everyone';
   bool preview = false;
+  bool tileError = false;
   @override
   Widget build(BuildContext context) {
     final meals = widget.app.memories
@@ -31,11 +41,7 @@ class _MealMapState extends State<MealMap> {
               (companion == 'Everyone' || m.companions.contains(companion)),
         )
         .toList();
-    final ready =
-        const String.fromEnvironment('GOOGLE_MAPS_API_KEY').isNotEmpty &&
-        (Platform.isAndroid || Platform.isIOS) &&
-        !preview &&
-        widget.app.online;
+    final ready = widget.apiKey.isNotEmpty && !preview && widget.app.online;
     final people = {
       'Everyone',
       ...widget.app.memories.expand((m) => m.companions),
@@ -81,12 +87,23 @@ class _MealMapState extends State<MealMap> {
               ),
               if (ready || preview)
                 TextButton(
-                  onPressed: () => setState(() => preview = !preview),
+                  onPressed: () => setState(() {
+                    preview = !preview;
+                    tileError = false;
+                  }),
                   child: Text(preview ? 'Try online map' : 'Use offline list'),
                 ),
             ],
           ),
           const SizedBox(height: 16),
+          if (ready && tileError)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: Text(
+                'The map is unavailable right now. Your saved locations are below, or use the offline list.',
+                style: TextStyle(fontSize: 12, color: Palette.muted),
+              ),
+            ),
           if (!widget.app.online)
             const Padding(
               padding: EdgeInsets.only(bottom: 12),
@@ -100,41 +117,91 @@ class _MealMapState extends State<MealMap> {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(16),
               child: ready
-                  ? GoogleMap(
-                      initialCameraPosition: CameraPosition(
-                        target: meals.isEmpty
-                            ? const LatLng(14.5547, 121.0244)
-                            : LatLng(
-                                meals.first.latitude!,
-                                meals.first.longitude!,
-                              ),
-                        zoom: 13,
-                      ),
-                      clusterManagers: {
-                        ClusterManager(
-                          clusterManagerId: const ClusterManagerId('meals'),
-                        ),
-                      },
-                      markers: meals
-                          .map(
-                            (m) => Marker(
-                              markerId: MarkerId(m.id),
-                              clusterManagerId: const ClusterManagerId('meals'),
-                              position: LatLng(m.latitude!, m.longitude!),
-                              infoWindow: InfoWindow(
-                                title: m.venue.isEmpty
-                                    ? 'A little meal'
-                                    : m.venue,
-                                snippet: m.caption,
-                                onTap: () => widget.onOpen(m),
-                              ),
-                              onTap: () => widget.onOpen(m),
+                  ? Stack(
+                      children: [
+                        FlutterMap(
+                          options: MapOptions(
+                            initialCenter: meals.isEmpty
+                                ? const LatLng(14.5547, 121.0244)
+                                : LatLng(
+                                    meals.first.latitude!,
+                                    meals.first.longitude!,
+                                  ),
+                            initialZoom: 13,
+                            minZoom: 2,
+                            maxZoom: 19,
+                          ),
+                          children: [
+                            TileLayer(
+                              urlTemplate:
+                                  'https://maps.geoapify.com/v1/tile/osm-carto/{z}/{x}/{y}.png?apiKey=${Uri.encodeQueryComponent(widget.apiKey)}',
+                              tileProvider: widget.tileProvider,
+                              userAgentPackageName: 'com.example.morsl',
+                              maxNativeZoom: 19,
+                              panBuffer: 0,
+                              errorTileCallback: (_, _, _) {
+                                if (mounted && !tileError) {
+                                  setState(() => tileError = true);
+                                }
+                              },
                             ),
-                          )
-                          .toSet(),
-                      myLocationButtonEnabled: false,
-                      mapToolbarEnabled: false,
-                      zoomControlsEnabled: false,
+                            MarkerClusterLayerWidget(
+                              options: MarkerClusterLayerOptions(
+                                maxClusterRadius: 45,
+                                size: const Size(44, 44),
+                                padding: const EdgeInsets.all(48),
+                                maxZoom: 17,
+                                markers: meals
+                                    .map(
+                                      (m) => Marker(
+                                        key: ValueKey(m.id),
+                                        point: LatLng(
+                                          m.latitude!,
+                                          m.longitude!,
+                                        ),
+                                        width: 44,
+                                        height: 44,
+                                        child: IconButton.filled(
+                                          tooltip: m.venue.isEmpty
+                                              ? 'A little meal'
+                                              : m.venue,
+                                          style: IconButton.styleFrom(
+                                            backgroundColor: Palette.terracotta,
+                                          ),
+                                          icon: const Icon(
+                                            Icons.restaurant,
+                                            size: 20,
+                                          ),
+                                          onPressed: () => widget.onOpen(m),
+                                        ),
+                                      ),
+                                    )
+                                    .toList(),
+                                builder: (context, markers) => Container(
+                                  decoration: const BoxDecoration(
+                                    color: Palette.terracotta,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    '${markers.length}',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const Positioned(
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          child: GeoapifyAttribution(),
+                        ),
+                      ],
                     )
                   : Stack(
                       children: [
@@ -168,7 +235,7 @@ class _MealMapState extends State<MealMap> {
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: const Text(
-                              'Illustrated preview · locations listed below\nConnect Google Maps for a geographic map.',
+                              'Illustrated preview · locations listed below\nGeoapify provides the online map.',
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 11,
@@ -191,7 +258,8 @@ class _MealMapState extends State<MealMap> {
             const EmptyState(
               icon: Icons.place_outlined,
               title: 'A memory doesn’t need a pin.',
-              message: 'Confirm a meal location in Plating to see it here. All your memories are still in History.',
+              message:
+                  'Confirm a meal location in Plating to see it here. All your memories are still in History.',
             ),
           ...meals.map(
             (m) => ListTile(

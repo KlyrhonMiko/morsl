@@ -93,10 +93,12 @@ class PlatePicker extends StatefulWidget {
     required this.directory,
     required this.engine,
     this.guard,
+    this.requestCloudUpload,
   });
   final String original, directory;
   final SegmentationEngine engine;
   final Widget Function(Widget child)? guard;
+  final Future<bool> Function()? requestCloudUpload;
   @override
   State<PlatePicker> createState() => _PlatePickerState();
 }
@@ -138,6 +140,13 @@ class _PlatePickerState extends State<PlatePicker> {
     aspect: selection.width * photo!.width / (selection.height * photo!.height),
   );
   Future<void> _select(bool automatic) async {
+    if (automatic &&
+        widget.engine is RemoteSegmentationEngine &&
+        widget.requestCloudUpload != null &&
+        !await widget.requestCloudUpload!()) {
+      return;
+    }
+    if (!mounted) return;
     setState(() {
       busy = true;
       error = null;

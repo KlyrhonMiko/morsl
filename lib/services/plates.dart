@@ -4,85 +4,10 @@ import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
-import 'package:uuid/uuid.dart';
 
 import '../data/models.dart';
-
-const plateChannel = MethodChannel('morsl/plates');
-
-Map<String, dynamic>? _normalizedMask(Uint8List bytes) {
-  final mask = img.decodePng(bytes);
-  if (mask == null) return null;
-  final normalized = mask.width <= 768 && mask.height <= 768
-      ? mask
-      : img.copyResize(
-          mask,
-          width: mask.width >= mask.height ? 768 : null,
-          height: mask.height > mask.width ? 768 : null,
-        );
-  return {
-    'bytes': img.encodePng(normalized),
-    'aspect': mask.width / mask.height,
-  };
-}
-
-Future<List<Plate>> detectPlates(
-  String original,
-  String directory, {
-  Plate? region,
-}) async {
-  final prepared = await compute(plateRegionBytes, <String, dynamic>{
-    'original': original,
-    'region': region?.toJson(),
-    'limit': 1600,
-  });
-  final input = File(p.join(directory, 'selection-${const Uuid().v4()}.png'));
-  try {
-    await input.writeAsBytes(prepared, flush: true);
-    final rows =
-        await plateChannel.invokeListMethod<dynamic>('subjects', {
-          'path': input.path,
-        }) ??
-        [];
-    final plates = <Plate>[];
-    for (final row in rows) {
-      final data = Map<String, dynamic>.from(row);
-      final bounds = List<num>.from(data['bounds']);
-      final bytes = data['mask'] as Uint8List;
-      final normalized = await compute(_normalizedMask, bytes);
-      if (bounds.length != 4 ||
-          normalized == null ||
-          bounds.any((n) => !n.isFinite) ||
-          bounds.any((n) => n < 0 || n > 1) ||
-          bounds[0] + bounds[2] > 1.001 ||
-          bounds[1] + bounds[3] > 1.001 ||
-          bounds[2] <= 0 ||
-          bounds[3] <= 0) {
-        continue;
-      }
-      final plate = Plate(
-        id: const Uuid().v4(),
-        mask: base64Encode(normalized['bytes'] as Uint8List),
-        left: (region?.left ?? 0) + bounds[0] * (region?.width ?? 1),
-        top: (region?.top ?? 0) + bounds[1] * (region?.height ?? 1),
-        width: bounds[2].toDouble() * (region?.width ?? 1),
-        height: bounds[3].toDouble() * (region?.height ?? 1),
-        aspect: normalized['aspect'] as double,
-        x: .12 + (plates.length % 2) * .32,
-        y: .13 + (plates.length ~/ 2) * .23,
-        scale: .48,
-      );
-      plates.add(await renderPlate(original, directory, plate));
-    }
-    arrangePlates(plates);
-    return plates;
-  } finally {
-    if (await input.exists()) await input.delete();
-  }
-}
 
 /// Fit every detected dish between the date and caption on the .91-aspect card.
 void arrangePlates(List<Plate> plates) {

@@ -15,8 +15,6 @@ class OfflineEngine implements SegmentationEngine {
   @override
   Future<bool> available() async => false;
   @override
-  Future<bool> prepare() async => false;
-  @override
   Future<String> process(String original, String output) async =>
       throw StateError('offline');
   @override
@@ -37,8 +35,6 @@ void main() {
     await File(original).writeAsBytes(img.encodePng(source));
   });
   tearDown(() async {
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(plateChannel, null);
     await directory.delete(recursive: true);
   });
 
@@ -150,54 +146,6 @@ void main() {
       expect(rendered.path, restored.path);
       expect(await File(rendered.path).exists(), true);
       expect(img.decodePng(await File(original).readAsBytes())!.width, 20);
-    },
-  );
-
-  test(
-    'multiple model masks map from a selection back to original coordinates',
-    () async {
-      final alpha = img.Image(width: 4, height: 6, numChannels: 4);
-      for (final pixel in alpha) {
-        pixel.setRgba(255, 255, 255, 255);
-      }
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(plateChannel, (call) async {
-            expect(call.method, 'subjects');
-            expect(await File((call.arguments as Map)['path']).exists(), true);
-            return [
-              {
-                'mask': img.encodePng(alpha),
-                'bounds': [.1, .2, .4, .6],
-              },
-              {
-                'mask': img.encodePng(alpha),
-                'bounds': [.5, .1, .3, .5],
-              },
-            ];
-          });
-      final plates = await detectPlates(
-        original,
-        directory.path,
-        region: Plate(
-          id: 'region',
-          mask: solidPlateMask(),
-          left: .2,
-          top: .1,
-          width: .5,
-          height: .8,
-        ),
-      );
-      expect(plates.length, 2);
-      expect(plates[0].left, closeTo(.25, .001));
-      expect(plates[0].top, closeTo(.26, .001));
-      expect(plates[0].width, closeTo(.2, .001));
-      expect(plates[1].left, closeTo(.45, .001));
-      expect(plates[0].id, isNot(plates[1].id));
-      expect(await File(plates[1].path).exists(), true);
-      expect(
-        directory.listSync().where((f) => f.path.contains('selection-')),
-        isEmpty,
-      );
     },
   );
 

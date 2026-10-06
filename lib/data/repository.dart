@@ -43,66 +43,69 @@ class MemoryRepository {
     await save(current, enqueue: enqueue);
     return current;
   });
-  Future<void> save(Memory memory, {bool enqueue = true}) =>
-      db.transaction(() async {
-        final j = memory.toJson();
-        final meal = {
-          for (final k in [
-            'id',
-            'creator',
-            'createdAt',
-            'venue',
-            'placeId',
-            'companions',
-            'latitude',
-            'longitude',
-            'accuracy',
-            'measuredAt',
-            'locationConfirmed',
-            'mealRevision',
-          ])
-            k: j[k],
-        };
-        await db.customStatement(
-          'INSERT OR REPLACE INTO meals VALUES (?, ?, ?)',
-          [memory.id, memory.scope, jsonEncode(meal)],
-        );
-        await db.customStatement(
-          'INSERT OR REPLACE INTO personal_memories VALUES (?, ?, ?)',
-          [memory.id, memory.scope, memory.encode()],
-        );
-        await db.customStatement(
-          'INSERT OR REPLACE INTO meal_assets VALUES (?, ?, ?, ?, ?, ?)',
-          [
-            memory.assetId ?? memory.id,
-            memory.scope,
-            memory.id,
-            memory.original,
-            memory.cutout,
-            memory.thumbnail,
-          ],
-        );
-        await db.customStatement(
-          'INSERT OR REPLACE INTO processing_jobs VALUES (?, ?, ?, ?, ?)',
-          [
-            memory.assetId ?? memory.id,
-            memory.scope,
-            memory.job.name,
-            memory.attempts,
-            jsonEncode({
-              'error': memory.error,
-              'durationMs': memory.durationMs,
-              'runtime': memory.runtime,
-            }),
-          ],
-        );
-        if (enqueue && memory.scope != 'guest' && !memory.demo) {
-          await db.customStatement(
-            'INSERT OR REPLACE INTO sync_operations (entity, scope, id, payload) VALUES (?, ?, ?, ?)',
-            [memory.id, memory.scope, const Uuid().v4(), memory.encode()],
-          );
-        }
-      });
+  Future<void> save(
+    Memory memory, {
+    bool enqueue = true,
+  }) => db.transaction(() async {
+    final j = memory.toJson();
+    final meal = {
+      for (final k in [
+        'id',
+        'creator',
+        'createdAt',
+        'venue',
+        'placeId',
+        'companions',
+        'latitude',
+        'longitude',
+        'accuracy',
+        'measuredAt',
+        'locationConfirmed',
+        'mealRevision',
+      ])
+        k: j[k],
+    };
+    await db.customStatement('INSERT OR REPLACE INTO meals VALUES (?, ?, ?)', [
+      memory.id,
+      memory.scope,
+      jsonEncode(meal),
+    ]);
+    await db.customStatement(
+      'INSERT OR REPLACE INTO personal_memories VALUES (?, ?, ?)',
+      [memory.id, memory.scope, memory.encode()],
+    );
+    await db.customStatement(
+      'INSERT OR REPLACE INTO meal_assets VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        memory.assetId ?? memory.id,
+        memory.scope,
+        memory.id,
+        memory.original,
+        memory.cutout,
+        memory.thumbnail,
+      ],
+    );
+    await db.customStatement(
+      'INSERT OR REPLACE INTO processing_jobs VALUES (?, ?, ?, ?, ?)',
+      [
+        memory.assetId ?? memory.id,
+        memory.scope,
+        memory.job.name,
+        memory.attempts,
+        jsonEncode({
+          'error': memory.error,
+          'durationMs': memory.durationMs,
+          'runtime': memory.runtime,
+        }),
+      ],
+    );
+    if (enqueue && memory.scope != 'guest' && !memory.demo) {
+      await db.customStatement(
+        'INSERT OR REPLACE INTO sync_operations (entity, scope, id, payload) VALUES (?, ?, ?, ?)',
+        [memory.id, memory.scope, const Uuid().v4(), memory.encode()],
+      );
+    }
+  });
   Future<void> remove(String id, String scope) => db.transaction(() async {
     for (final table in [
       'meals',

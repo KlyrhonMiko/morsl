@@ -2,6 +2,7 @@
 *.class
 *.log
 *.pyc
+__pycache__/
 *.swp
 .DS_Store
 .atom/
@@ -53,3 +54,6 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Supabase
+supabase/.temp/

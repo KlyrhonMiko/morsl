@@ -6,84 +6,9 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:device_info_plus/device_info_plus.dart';
-import '../data/models.dart';
-import 'plates.dart';
 
-abstract interface class SegmentationEngine {
-  Future<bool> available();
-  Future<bool> prepare();
-  Future<String> process(String original, String output);
-  String get runtime;
-}
-
-abstract interface class MultiSubjectSegmentationEngine {
-  Future<List<Plate>> subjects(
-    String original,
-    String directory, {
-    Plate? region,
-  });
-}
-
-class NativeSegmentation
-    implements SegmentationEngine, MultiSubjectSegmentationEngine {
-  @override
-  Future<List<Plate>> subjects(
-    String original,
-    String directory, {
-    Plate? region,
-  }) async {
-    if (!await available()) {
-      throw StateError(
-        'Download the dish models once in Settings, then retry offline.',
-      );
-    }
-    return detectPlates(original, directory, region: region);
-  }
-
-  String device = '';
-  Future<void> inspectDevice() async {
-    try {
-      final info = DeviceInfoPlugin();
-      if (Platform.isAndroid) {
-        final android = await info.androidInfo;
-        device =
-            '${android.manufacturer} ${android.model}; API ${android.version.sdkInt}; ';
-      }
-    } catch (_) {
-      /* OS details remain available on unsupported platforms. */
-    }
-  }
-
-  bool get supported => Platform.isAndroid;
-  @override
-  String get runtime =>
-      '$device${Platform.operatingSystem} ${Platform.operatingSystemVersion}; ${Platform.isAndroid ? 'Grounding DINO Tiny + MobileSAM; dish pipeline v1' : 'automatic cutouts unavailable'}';
-  @override
-  Future<bool> available() async =>
-      supported &&
-      (await plateChannel.invokeMethod<bool>('available') ?? false);
-  @override
-  Future<bool> prepare() async =>
-      supported && (await plateChannel.invokeMethod<bool>('prepare') ?? false);
-  @override
-  Future<String> process(String original, String output) async {
-    if (!supported) {
-      throw StateError(
-        'Automatic cutouts are available on Android. You can select a plate and edit its edges by hand.',
-      );
-    }
-    if (!await available()) {
-      throw StateError(
-        'Model not ready. Prepare it online, then retry. Your original is safe.',
-      );
-    }
-    final plates = await subjects(original, p.dirname(output));
-    if (plates.isEmpty) throw StateError('No dishes found in this photo.');
-    await File(plates.first.path).copy(output);
-    return output;
-  }
-}
+export 'cloud_segmentation.dart';
+export 'segmentation.dart';
 
 class MediaStore {
   Future<Directory> directory(String scope, String id) async {

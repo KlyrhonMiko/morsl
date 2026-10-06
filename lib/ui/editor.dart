@@ -13,6 +13,8 @@ import 'plate_tools.dart';
 import 'theme.dart';
 import 'memory_card.dart';
 import 'tools.dart';
+import 'cloud_cutouts.dart';
+import 'account_gate.dart';
 
 class PlatingEditor extends ConsumerStatefulWidget {
   const PlatingEditor({super.key, required this.memory});
@@ -99,7 +101,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   }
 
   void change(VoidCallback update) {
-    if (app.scope != memory.scope) {
+    if (!app.canMutate || app.scope != memory.scope) {
       return;
     }
     setState(() {
@@ -111,12 +113,14 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   }
 
   Future<void> _persist() {
+    if (!app.canMutate || app.scope != memory.scope) return Future.value();
     final snapshot = memory.copy();
     final didDateEdit = dateEdited, didLocationEdit = locationEdited;
     final didPlateEdit = platesDirty, didPhotoEdit = photoChoiceEdited;
     saving = saving
         .catchError((Object _) {})
         .then((_) async {
+          if (!app.canMutate || app.scope != snapshot.scope) return;
           await app.repository.mutate(snapshot.id, snapshot.scope, (current) {
             current.caption = snapshot.caption;
             current.feeling = snapshot.feeling;
@@ -172,6 +176,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     animation: app,
     builder: (context, _) {
       final available =
+          app.canMutate &&
           app.scope == memory.scope &&
           app.memories.any((m) => m.id == memory.id && m.original.isNotEmpty);
       return available
@@ -188,6 +193,9 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   );
 
   Future<void> addPlate({bool automatic = false}) async {
+    if (!app.canMutate || app.scope != memory.scope) return;
+    if (automatic && !await requestCloudCutouts(context, app)) return;
+    if (!mounted) return;
     setState(() => findingPlates = true);
     try {
       final dir = await app.media.directory(memory.scope, memory.id);
@@ -212,6 +220,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                 original: memory.original,
                 directory: dir.path,
                 engine: app.engine,
+                requestCloudUpload: () => requestCloudCutouts(context, app),
                 guard: _guardPlateTool,
               ),
             ),
@@ -271,6 +280,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   }
 
   Future<void> editPlate() async {
+    if (!app.canMutate || app.scope != memory.scope) return;
     final plate = selectedPlate;
     if (plate == null) return;
     final edited = await Navigator.push<Plate>(
@@ -303,10 +313,11 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   }
 
   Future<void> saveMemory() async {
+    if (!app.canMutate || app.scope != memory.scope) return;
     debounce?.cancel();
     memory.draft = false;
     await _persist();
-    if (!mounted) {
+    if (!mounted || !app.canMutate || app.scope != memory.scope) {
       return;
     }
     if (status.startsWith('Could not')) {
@@ -349,6 +360,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             message: 'Return to History to browse available memories.',
           ),
         )
+      : !app.canMutate
+      ? BrowseMemory(memory: memory, app: app)
       : Scaffold(
           appBar: AppBar(
             title: const Text(

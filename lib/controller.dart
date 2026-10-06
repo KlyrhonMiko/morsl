@@ -37,20 +37,39 @@ class MorslController extends ChangeNotifier {
   final DraftReminders reminders;
   List<Memory> memories = [];
   List<SyncOperation> operations = [];
-  String get scope => cloud.account ?? 'guest';
+  String get scope =>
+      cloud.signedInWithGoogle ? cloud.account ?? 'guest' : 'guest';
   int destination = 0;
-  bool busySync = false,
-      preparing = false,
-      modelReady = false,
-      reminderEnabled = false;
+  bool busySync = false, modelReady = false, reminderEnabled = false;
   bool _processing = false;
   bool active = true;
   bool online = true;
+  bool get canMutate => cloud.signedInWithGoogle && cloud.account != null;
+  void requireGoogleAccount([Memory? memory]) {
+    if (!canMutate) throw StateError('Sign in with Google to make changes.');
+    if (memory != null && memory.scope != scope) {
+      throw StateError('This memory belongs to another scrapbook.');
+    }
+  }
+
+  bool cloudCutoutsDecided = false;
+  bool get usesCloudCutouts => engine is RemoteSegmentationEngine;
+  bool get cloudCutoutsAllowed =>
+      engine is RemoteSegmentationEngine &&
+      (engine as RemoteSegmentationEngine).uploadsAllowed;
+  bool get cloudCutoutsSignedIn =>
+      engine is! RemoteSegmentationEngine ||
+      (engine as RemoteSegmentationEngine).authenticated;
+  bool get _canProcess =>
+      canMutate &&
+      (!usesCloudCutouts ||
+          (cloudCutoutsAllowed && cloudCutoutsSignedIn && online));
   int reminderHour = 20, reminderMinute = 0;
-  String? syncError, notice;
+  String? syncError, notice, authError;
   Timer? _syncTimer;
   StreamSubscription? _auth;
   StreamSubscription? _connectivity;
+  String? _authScope;
 
   Future<void> initialize({bool seedExamples = true}) async {
     try {
@@ -63,6 +82,7 @@ class MorslController extends ChangeNotifier {
         notifyListeners();
         if (online && wasOffline && active) {
           unawaited(sync());
+          unawaited(processQueue());
         }
       });
     } catch (_) {
@@ -76,6 +96,7 @@ class MorslController extends ChangeNotifier {
       await _upgradeExampleCutouts();
     }
     await reload();
+    await _loadCloudCutoutChoice();
     reminderEnabled = await repository.preference('reminders:$scope') == 'true';
     final time = (await repository.preference('reminderTime:$scope') ?? '20:0')
         .split(':');
@@ -96,8 +117,21 @@ class MorslController extends ChangeNotifier {
       notice =
           'Reminders are unavailable on this device. Your drafts are always here.';
     }
+    _authScope = scope;
     _auth = cloud.client?.auth.onAuthStateChange.listen(
-      (_) => unawaited(_accountChanged()),
+      (_) {
+        authError = null;
+        if (_authScope != scope) {
+          _authScope = scope;
+          unawaited(_accountChanged());
+        }
+        notifyListeners();
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        // Callback errors can contain OAuth codes. Keep those out of the UI.
+        authError = 'Google sign-in could not be completed. Please try again.';
+        notifyListeners();
+      },
     );
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (active) {
@@ -110,6 +144,12 @@ class MorslController extends ChangeNotifier {
 
   Future<void> _accountChanged() async {
     destination = 0;
+    // Revoke the previous account's upload choice before any asynchronous work.
+    if (engine case RemoteSegmentationEngine remote) {
+      remote.uploadsAllowed = false;
+    }
+    modelReady = false;
+    await _loadCloudCutoutChoice();
     reminderEnabled = await repository.preference('reminders:$scope') == 'true';
     final time = (await repository.preference('reminderTime:$scope') ?? '20:0')
         .split(':');
@@ -119,6 +159,12 @@ class MorslController extends ChangeNotifier {
     await _schedule();
     unawaited(sync());
     unawaited(processQueue());
+  }
+
+  Future<void> signInWithGoogle() async {
+    authError = null;
+    notifyListeners();
+    await cloud.signInWithGoogle();
   }
 
   Future<void> reload() async {
@@ -133,10 +179,48 @@ class MorslController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _loadCloudCutoutChoice() async {
+    if (engine case RemoteSegmentationEngine remote) {
+      final account = scope;
+      final choice = await repository.preference('cloudCutouts:v1:$account');
+      if (scope != account) return;
+      cloudCutoutsDecided = choice != null;
+      remote.uploadsAllowed = choice == 'true';
+    }
+  }
+
+  Future<void> setCloudCutoutsAllowed(bool allowed) async {
+    requireGoogleAccount();
+    if (engine case RemoteSegmentationEngine remote) {
+      if (allowed && !remote.authenticated) {
+        throw StateError('Sign in to use cloud cutouts.');
+      }
+      final account = scope;
+      remote.uploadsAllowed = allowed;
+      cloudCutoutsDecided = true;
+      modelReady = false;
+      notifyListeners();
+      await repository.setPreference('cloudCutouts:v1:$account', '$allowed');
+      if (scope != account) return;
+      if (allowed) unawaited(processQueue());
+    }
+  }
+
   Future<void> save(Memory m, {bool enqueue = true}) async {
+    requireGoogleAccount(m);
     await repository.save(m, enqueue: enqueue);
     await reload();
     await _schedule();
+  }
+
+  Future<void> toggleBookmark(Memory memory) async {
+    requireGoogleAccount(memory);
+    await repository.mutate(
+      memory.id,
+      memory.scope,
+      (current) => current.bookmarked = !current.bookmarked,
+    );
+    await reload();
   }
 
   void navigate(int index) {
@@ -153,6 +237,8 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<Memory?> capture(ImageSource source, {bool locate = false}) async {
+    requireGoogleAccount();
+    final account = scope;
     final photo = await ImagePicker().pickImage(
       source: source,
       imageQuality: 95,
@@ -160,6 +246,7 @@ class MorslController extends ChangeNotifier {
     if (photo == null) {
       return null;
     }
+    if (scope != account) throw StateError('Account changed during capture.');
     return importPhoto(
       photo,
       locate: locate,
@@ -172,9 +259,12 @@ class MorslController extends ChangeNotifier {
     bool locate = false,
     bool readMetadata = false,
   }) async {
+    requireGoogleAccount();
     final account = scope;
     final id = const Uuid().v4();
     final original = await media.preserve(photo, account, id);
+    requireGoogleAccount();
+    if (scope != account) throw StateError('Account changed during import.');
     final m = Memory(
       id: id,
       assetId: id,
@@ -202,7 +292,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> recoverLostCapture() async {
-    if (!Platform.isAndroid) {
+    if (!Platform.isAndroid || !canMutate) {
       return;
     }
     final lost = await ImagePicker().retrieveLostData();
@@ -280,26 +370,8 @@ class MorslController extends ChangeNotifier {
     }
   }
 
-  Future<void> prepareModel() async {
-    preparing = true;
-    notifyListeners();
-    try {
-      modelReady = await engine.prepare();
-      notice = modelReady
-          ? 'Cutout model ready for offline meals.'
-          : 'Model unavailable. Compose with your original and retry on a supported device.';
-    } catch (e) {
-      notice = e.toString();
-    }
-    preparing = false;
-    notifyListeners();
-    if (modelReady) {
-      unawaited(processQueue());
-    }
-  }
-
   Future<void> processQueue() async {
-    if (_processing || !active) {
+    if (_processing || !active || !_canProcess) {
       return;
     }
     _processing = true;
@@ -312,7 +384,7 @@ class MorslController extends ChangeNotifier {
         await repository.save(m, enqueue: false);
       }
       for (final m in jobs.where((m) => m.job == JobStatus.queued && !m.demo)) {
-        if (!active || scope != account) {
+        if (!active || scope != account || !_canProcess) {
           break;
         }
         m.job = JobStatus.processing;
@@ -339,6 +411,14 @@ class MorslController extends ChangeNotifier {
         } catch (e) {
           error = e.toString();
         }
+        if (scope != account || !_canProcess) {
+          await repository.mutate(m.id, m.scope, (current) {
+            current.job = JobStatus.queued;
+            current.error = null;
+          }, enqueue: false);
+          break;
+        }
+        if (usesCloudCutouts) modelReady = error == null;
         watch.stop();
         final current = await repository.mutate(m.id, m.scope, (current) {
           // Select the first successful cutout, while preserving a photo choice
@@ -372,6 +452,7 @@ class MorslController extends ChangeNotifier {
     } finally {
       _processing = false;
       if (active &&
+          _canProcess &&
           (await repository.list(scope)).any(
             (m) =>
                 !m.demo &&
@@ -383,6 +464,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> retry(Memory m) async {
+    requireGoogleAccount(m);
     await repository.mutate(m.id, m.scope, (current) {
       current.job = JobStatus.queued;
       current.error = null;
@@ -392,6 +474,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> rate(Memory m, String rating, String? category) async {
+    requireGoogleAccount(m);
     final current = await repository.mutate(m.id, m.scope, (current) {
       current.rating = rating;
       current.failureCategory = category;
@@ -403,6 +486,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<String> exportEvaluations() async {
+    requireGoogleAccount();
     final dir = await media.directory(scope, 'exports');
     final file = File(
       p.join(
@@ -423,6 +507,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> setReminder(bool enabled, int hour, int minute) async {
+    requireGoogleAccount();
     if (enabled && !await reminders.requestPermission()) {
       throw StateError(
         'Notification permission was not granted. You can still finish memories in Drafts.',
@@ -438,13 +523,15 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> _schedule() => reminders.schedule(
-    enabled: reminderEnabled,
+    enabled: canMutate && reminderEnabled,
     hasDrafts: memories.any((m) => m.draft && !m.archived),
     hour: reminderHour,
     minute: reminderMinute,
   );
 
   Future<void> sync({bool manual = false}) async {
+    if (manual) requireGoogleAccount();
+    if (!canMutate || !cloud.configured) return;
     if (busySync || cloud.account == null || !online) {
       return;
     }
@@ -539,6 +626,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> associateGuest() async {
+    requireGoogleAccount();
     if (cloud.account == null) {
       return;
     }
@@ -607,6 +695,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> resolveConflict(Memory remote, {required bool keepLocal}) async {
+    requireGoogleAccount(remote);
     if (scope != remote.scope) {
       throw StateError('Account changed.');
     }
@@ -650,6 +739,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> clearExamples() async {
+    requireGoogleAccount();
     for (final m in memories.where((m) => m.demo).toList()) {
       await removeLocal(m);
     }
@@ -739,7 +829,7 @@ class MorslController extends ChangeNotifier {
         venue: 'Sunday at home',
         companions: ['Jamie'],
         job: JobStatus.failed,
-        error: 'Example draft. Import a meal to try on-device cutouts.',
+        error: 'Example draft. Import a meal to try cloud cutouts.',
       ),
       enqueue: false,
     );

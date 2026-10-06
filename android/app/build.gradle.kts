@@ -1,5 +1,3 @@
-import java.util.Base64
-
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -20,11 +18,6 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.morsl"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        val dartDefines = (project.findProperty("dart-defines") as String?)
-            ?.split(",")?.map { String(Base64.getDecoder().decode(it)) }
-            ?.associate { it.substringBefore("=") to it.substringAfter("=") } ?: emptyMap()
-        manifestPlaceholders["GOOGLE_MAPS_API_KEY"] = dartDefines["GOOGLE_MAPS_API_KEY"] ?: ""
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -47,10 +40,6 @@ android {
 }
 
 dependencies {
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.2")
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
