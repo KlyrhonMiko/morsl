@@ -26,23 +26,36 @@ export function createVenueHandler({ authenticate, apiKey, fetchPlaces = fetch }
       if (typeof query !== "string" || query.trim().length > 120) {
         return json({ error: "Enter a restaurant name up to 120 characters" }, 400);
       }
-      const name = query.trim();
+      const name = query.normalize("NFKC").replace(/\s+/g, " ").trim();
       const key = apiKey();
       if (!key) return json({ error: "Venue lookup is not configured" }, 503);
-      const url = new URL("https://api.geoapify.com/v2/places");
+      // Autocomplete is optimized for typed names; Places handles nearby browsing.
+      const url = new URL(name
+        ? "https://api.geoapify.com/v1/geocode/autocomplete"
+        : "https://api.geoapify.com/v2/places");
       url.search = new URLSearchParams({
-        categories: "catering.restaurant,catering.cafe",
-        filter: `circle:${longitude},${latitude},${name ? 15000 : 2000}`,
         bias: `proximity:${longitude},${latitude}`,
         limit: "10", apiKey: key,
       }).toString();
-      if (name) url.searchParams.set("name", name);
-      const response = await fetchPlaces(url, { signal: AbortSignal.timeout(6000) });
+      // Meals may be edited after travelling home. Rank named branches by
+      // distance without excluding venues outside the user's current area.
+      if (name) {
+        url.searchParams.set("text", name);
+        url.searchParams.set("type", "amenity");
+      } else {
+        url.searchParams.set("categories", "catering");
+        url.searchParams.set("filter", `circle:${longitude},${latitude},2000`);
+      }
+      const response = await fetchPlaces(url, { signal: AbortSignal.timeout(8000) });
       if (!response.ok) return json({ error: "Nearby places unavailable. Enter your own venue." }, 502);
       const result = await response.json();
       if (!Array.isArray(result.features)) return json({ error: "Nearby places unavailable. Enter your own venue." }, 502);
-      const places = result.features.slice(0, 10).flatMap((feature) => {
+      const places = result.features.flatMap((feature) => {
         const properties = feature.properties ?? {};
+        // Some amenities lack a category. Keep those, but omit known non-food POIs.
+        if (name && typeof properties.category === "string" &&
+            properties.category !== "catering" &&
+            !properties.category.startsWith("catering.")) return [];
         const lat = properties.lat;
         const lon = properties.lon;
         if (typeof properties.place_id !== "string" || !properties.place_id ||
@@ -55,7 +68,7 @@ export function createVenueHandler({ authenticate, apiKey, fetchPlaces = fetch }
           latitude: lat,
           longitude: lon,
         }];
-      });
+      }).slice(0, 10);
       return json({ places });
     } catch {
       return json({ error: "Venue lookup unavailable. Enter your own venue." }, 503);

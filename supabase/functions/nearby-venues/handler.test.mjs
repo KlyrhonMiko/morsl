@@ -18,7 +18,7 @@ test("queries Geoapify with longitude first and normalizes provider results", as
       assert.equal(url.pathname, "/v2/places");
       assert.equal(url.searchParams.get("filter"), "circle:121.02,14.55,2000");
       assert.equal(url.searchParams.get("bias"), "proximity:121.02,14.55");
-      assert.equal(url.searchParams.get("categories"), "catering.restaurant,catering.cafe");
+      assert.equal(url.searchParams.get("categories"), "catering");
       assert.equal(url.searchParams.get("limit"), "10");
       assert.equal(url.searchParams.get("apiKey"), "server-only-key");
       assert.ok(options.signal instanceof AbortSignal);
@@ -92,15 +92,44 @@ test("empty results are successful and large result sets are capped", async () =
   }
 });
 
-test("restaurant names search nearby branches in a wider radius", async () => {
+test("restaurant names find distant branches when editing a meal from home", async () => {
   const handler = createVenueHandler({ authenticate: async () => google,
     apiKey: () => "key", fetchPlaces: async (url) => {
-      assert.equal(url.searchParams.get("name"), "Italianis");
-      assert.equal(url.searchParams.get("filter"), "circle:121.02,14.55,15000");
+      assert.equal(url.pathname, "/v1/geocode/autocomplete");
+      assert.equal(url.searchParams.get("text"), "tgi fridays");
+      assert.equal(url.searchParams.get("type"), "amenity");
+      assert.equal(url.searchParams.get("limit"), "10");
+      assert.equal(url.searchParams.has("filter"), false);
       assert.equal(url.searchParams.get("bias"), "proximity:121.02,14.55");
-      return Response.json({ features: [] });
+      return Response.json({ features: [
+        { properties: { place_id: "distant-branch", name: "TGI Fridays", formatted: "Distant mall", lat: 14.8, lon: 121.02 } },
+      ] });
     } });
-  assert.equal((await handler(request({ latitude: 14.55, longitude: 121.02, query: " Italianis " }))).status, 200);
+  const response = await handler(request({ latitude: 14.55, longitude: 121.02, query: " tgi fridays " }));
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).places, [
+    { id: "geoapify:distant-branch", name: "TGI Fridays", address: "Distant mall", latitude: 14.8, longitude: 121.02 },
+  ]);
+});
+
+test("McDonald searches include fast-food branches and retain real map coordinates", async () => {
+  for (const query of ["McDonald", "mcdonalds", "McDonald’s"]) {
+    const handler = createVenueHandler({ authenticate: async () => google,
+      apiKey: () => "key", fetchPlaces: async (url) => {
+        assert.equal(url.pathname, "/v1/geocode/autocomplete");
+        assert.equal(url.searchParams.get("text"), query);
+        assert.equal(url.searchParams.get("type"), "amenity");
+        return Response.json({ features: [{properties: {
+          place_id: "fast-food", name: "McDonald's", formatted: "Makati",
+          categories: ["catering", "catering.fast_food"], lat: 14.5519003, lon: 121.0194003,
+        }}] });
+      } });
+    const response = await handler(request({latitude: 14.55, longitude: 121.02, query}));
+    assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).places, [{
+      id: "geoapify:fast-food", name: "McDonald's", address: "Makati", latitude: 14.5519003, longitude: 121.0194003,
+    }]);
+  }
 });
 
 test("invalid restaurant names never reach the provider", async () => {
@@ -109,6 +138,24 @@ test("invalid restaurant names never reach the provider", async () => {
   for (const query of [42, null, "a".repeat(121)]) {
     assert.equal((await handler(request({ latitude: 14.55, longitude: 121.02, query }))).status, 400);
   }
+});
+
+test("autocomplete omits known non-food places but retains uncategorized venues", async () => {
+  const handler = createVenueHandler({ authenticate: async () => google, apiKey: () => "key",
+    fetchPlaces: async (url) => {
+      assert.equal(url.searchParams.get("text"), "TGI Friday’s");
+      return Response.json({features: [
+        {properties:{place_id:"school", name:"School", category:"education.school", lat:14.55, lon:121.02}},
+        {properties:{place_id:"uncategorized", name:"TGI Fridays", lat:14.55, lon:121.02}},
+        ...Array.from({length:12}, (_,i) => ({properties:{place_id:`tgi-${i}`, name:"T.G.I. Fridays", category:"catering.restaurant", lat:14.55, lon:121.02}})),
+      ]});
+    } });
+  const response = await handler(request({latitude:14.55, longitude:121.02, query:"TGI Friday’s"}));
+  const {places} = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(places.length, 10);
+  assert.equal(places[0].id, "geoapify:uncategorized");
+  assert.ok(places.every(p => p.id !== "geoapify:school"));
 });
 
 test("results without valid map coordinates are omitted", async () => {

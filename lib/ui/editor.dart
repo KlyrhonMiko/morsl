@@ -18,6 +18,7 @@ import 'account_gate.dart';
 import 'cutout_status.dart';
 import 'plate_preview_pager.dart';
 import 'meal_photo_thumbnail.dart';
+import 'venue_field.dart';
 
 class PlatingEditor extends ConsumerStatefulWidget {
   const PlatingEditor({super.key, required this.memory});
@@ -897,36 +898,37 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             ),
           ),
           child: Wrap(
-            spacing: 4,
-            runSpacing: 4,
+            spacing: 8,
+            runSpacing: 8,
             children: [
-            TextButton.icon(
-              onPressed: addingPhotos || findingPlates
-                  ? null
-                  : () => _addPhotos(ImageSource.gallery),
-              icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
-              label: Text(addingPhotos ? 'Adding photos…' : 'Add photos'),
-            ),
-            TextButton.icon(
-              onPressed: addingPhotos || findingPlates
-                  ? null
-                  : () => _addPhotos(ImageSource.camera),
-              icon: const Icon(Icons.camera_alt_outlined, size: 18),
-              label: const Text('Take photo'),
-            ),
-            if ((memory.job == JobStatus.failed && !memory.originalProcessed) ||
-                memory.photos.any((p) => p.job == JobStatus.failed))
               TextButton.icon(
-                onPressed: findingPlates || addingPhotos
+                onPressed: addingPhotos || findingPlates
                     ? null
-                    : () async {
-                        if (!await requestCloudCutouts(context, app)) return;
-                        await app.retry(memory);
-                      },
-                icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Retry failed photos'),
+                    : () => _addPhotos(ImageSource.gallery),
+                icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+                label: Text(addingPhotos ? 'Adding photos…' : 'Add photos'),
               ),
-          ],
+              TextButton.icon(
+                onPressed: addingPhotos || findingPlates
+                    ? null
+                    : () => _addPhotos(ImageSource.camera),
+                icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                label: const Text('Take photo'),
+              ),
+              if ((memory.job == JobStatus.failed &&
+                      !memory.originalProcessed) ||
+                  memory.photos.any((p) => p.job == JobStatus.failed))
+                TextButton.icon(
+                  onPressed: findingPlates || addingPhotos
+                      ? null
+                      : () async {
+                          if (!await requestCloudCutouts(context, app)) return;
+                          await app.retry(memory);
+                        },
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: const Text('Retry failed photos'),
+                ),
+            ],
           ),
         ),
     ],
@@ -998,38 +1000,26 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       const SizedBox(height: 20),
 
       _label('Where was it?'),
-      TextField(
+      VenueField(
+        app: app,
+        memory: memory,
         controller: venue,
-        readOnly: !memory.ownsMeal,
         onChanged: (v) => change(() {
+          locationEdited = true;
           memory.venue = v;
           memory.placeId = null;
           memory.locationConfirmed = false;
+          memory.latitude = null;
+          memory.longitude = null;
         }),
-        decoration: InputDecoration(
-          hintText: 'A restaurant, Home, Picnic…',
-          prefixIcon: const Icon(Icons.place_outlined, size: 19),
-          suffixIcon: memory.ownsMeal
-              ? IconButton(
-                  tooltip: 'Confirm venue and location',
-                  onPressed: () async {
-                    await _persist();
-                    if (!mounted) {
-                      return;
-                    }
-                    final result = await showVenue(context, app, memory);
-                    if (result != null) {
-                      change(() {
-                        locationEdited = true;
-                        memory = result;
-                        venue.text = memory.venue;
-                      });
-                    }
-                  },
-                  icon: const Icon(Icons.edit_location_alt_outlined, size: 20),
-                )
-              : null,
-        ),
+        onSelected: (candidate) => change(() {
+          locationEdited = true;
+          memory.venue = venue.text;
+          memory.placeId = candidate['id'] as String?;
+          memory.latitude = (candidate['latitude'] as num).toDouble();
+          memory.longitude = (candidate['longitude'] as num).toDouble();
+          memory.locationConfirmed = true;
+        }),
       ),
       if (memory.latitude != null)
         Padding(
@@ -1037,7 +1027,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           child: Text(
             memory.locationConfirmed
                 ? 'Location confirmed · visible on your map'
-                : 'Approximate GPS saved · confirm to add it to the map',
+                : 'Approximate GPS saved · choose a restaurant to add it to the map',
             style: const TextStyle(fontSize: 10, color: Palette.muted),
           ),
         ),

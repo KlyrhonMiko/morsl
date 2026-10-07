@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:morsl/controller.dart';
 import 'package:morsl/data/database.dart';
 import 'package:morsl/data/models.dart';
@@ -16,7 +17,8 @@ import 'package:morsl/services/media.dart';
 import 'package:morsl/services/reminders.dart';
 import 'package:morsl/services/venue_location.dart';
 import 'package:morsl/ui/theme.dart';
-import 'package:morsl/ui/tools.dart';
+import 'package:morsl/ui/venue_field.dart';
+import 'package:morsl/ui/editor.dart';
 
 class VenueTestCloud extends CloudService {
   VenueTestCloud() : super(null, MediaStore());
@@ -64,6 +66,7 @@ void main() {
   late VenueTestCloud cloud;
   late Memory memory;
   Memory? saved;
+  late TextEditingController venueController;
   setUpAll(() async {
     for (final font in ['Quicksand', 'Caveat']) {
       await (FontLoader(
@@ -91,9 +94,11 @@ void main() {
       original: '',
     );
     saved = null;
+    venueController = TextEditingController();
   });
   tearDown(() async {
     app.dispose();
+    venueController.dispose();
     await database.close();
   });
 
@@ -101,33 +106,54 @@ void main() {
     WidgetTester tester, {
     Future<VenueLocation> Function()? locate,
     GlobalKey? previewKey,
+    double fieldTop = 100,
+    double keyboardHeight = 0,
   }) async {
+    venueController.text = memory.venue;
     tester.view.physicalSize = const Size(375, 812);
     tester.view.devicePixelRatio = 1;
+    tester.view.viewInsets = FakeViewPadding(bottom: keyboardHeight);
+    addTearDown(tester.view.resetViewInsets);
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final host = MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: morslTheme(),
       home: Scaffold(
-        body: Builder(
-          builder: (context) => Center(
-            child: TextButton(
-              onPressed: () async {
-                saved = await showModalBottomSheet<Memory>(
-                  context: context,
-                  isScrollControlled: true,
-                  showDragHandle: true,
-                  builder: (_) => VenueSheet(
-                    app: app,
-                    memory: memory,
-                    locate:
-                        locate ??
-                        () async => (latitude: 14.55, longitude: 121.02),
-                  ),
-                );
-              },
-              child: const Text('Choose restaurant'),
+        body: StatefulBuilder(
+          builder: (context, setState) => Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(height: fieldTop),
+                const Text('Where was it?'),
+                VenueField(
+                  app: app,
+                  memory: saved ?? memory,
+                  controller: venueController,
+                  locate:
+                      locate ??
+                      () async => (latitude: 14.55, longitude: 121.02),
+                  onChanged: (text) => setState(() {
+                    saved = (saved ?? memory).copy()
+                      ..venue = text
+                      ..placeId = null
+                      ..latitude = null
+                      ..longitude = null
+                      ..locationConfirmed = false;
+                  }),
+                  onSelected: (candidate) => setState(() {
+                    saved = (saved ?? memory).copy()
+                      ..venue = venueController.text
+                      ..placeId = candidate['id'] as String?
+                      ..latitude = (candidate['latitude'] as num).toDouble()
+                      ..longitude = (candidate['longitude'] as num).toDouble()
+                      ..locationConfirmed = true;
+                  }),
+                ),
+                const Text('Who was at the table?'),
+              ],
             ),
           ),
         ),
@@ -136,7 +162,6 @@ void main() {
     await tester.pumpWidget(
       previewKey == null ? host : RepaintBoundary(key: previewKey, child: host),
     );
-    await tester.tap(find.text('Choose restaurant'));
     await tester.pumpAndSettle();
   }
 
@@ -177,8 +202,8 @@ void main() {
       });
       await tester.tap(find.text('Italianis · Greenbelt'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Confirm venue'));
-      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('venue-suggestions')), findsNothing);
+      expect(find.byType(BottomSheet), findsNothing);
       expect(saved!.venue, 'Italianis · Greenbelt');
       expect(saved!.placeId, 'geoapify:branch');
       expect(saved!.latitude, 14.552);
@@ -221,7 +246,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('Allow location access'), findsOneWidget);
     expect(find.text('Enable location'), findsOneWidget);
-    await tester.tap(find.text('Save venue name'));
+    await tester.tap(find.text('Keep just the name'));
     await tester.pumpAndSettle();
     expect(saved!.venue, 'Home');
     expect(saved!.hasLocation, isFalse);
@@ -239,8 +264,9 @@ void main() {
       ..locationConfirmed = true;
     await open(tester);
     await tester.enterText(find.byType(TextField), 'Picnic');
-    await tester.pump();
-    await tester.tap(find.text('Save venue name'));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Keep just the name'));
     await tester.pumpAndSettle();
     expect(saved!.venue, 'Picnic');
     expect(saved!.placeId, isNull);
@@ -278,4 +304,143 @@ void main() {
     expect(find.text('New restaurant'), findsOneWidget);
     expect(find.text('Old result'), findsNothing);
   });
+
+  testWidgets(
+    'leaving the field dismisses suggestions and ignores late results',
+    (tester) async {
+      final pending = Completer<List<Map<String, dynamic>>>();
+      cloud.lookup = (_) => pending.future;
+      await open(tester);
+      await tester.enterText(find.byType(TextField), 'Italianis');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pump();
+      await tester.tapAt(const Offset(350, 700));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('venue-suggestions')), findsNothing);
+      pending.complete([
+        {
+          'id': 'late',
+          'name': 'Late branch',
+          'latitude': 14.55,
+          'longitude': 121.02,
+        },
+      ]);
+      await tester.pumpAndSettle();
+      expect(find.text('Late branch'), findsNothing);
+      expect(saved!.venue, 'Italianis');
+      expect(saved!.hasLocation, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'arrow keys and Enter choose a branch without a confirmation step',
+    (tester) async {
+      await open(tester);
+      await tester.enterText(find.byType(TextField), 'Italianis');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(saved!.placeId, 'geoapify:branch');
+      expect(saved!.hasLocation, isTrue);
+      expect(find.byKey(const ValueKey('venue-suggestions')), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'suggestions open above the field when the keyboard leaves little room',
+    (tester) async {
+      await open(tester, fieldTop: 360, keyboardHeight: 260);
+      await tester.enterText(find.byType(TextField), 'Italianis');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      final suggestions = find.byKey(const ValueKey('venue-suggestions'));
+      expect(
+        tester.getBottomLeft(suggestions).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.byType(TextField)).dy),
+      );
+      await tester.tap(find.text('Italianis · Greenbelt'));
+      await tester.pumpAndSettle();
+      expect(saved!.hasLocation, isTrue);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('a shared meal venue remains read only', (tester) async {
+    memory
+      ..creator = 'another-account'
+      ..venue = 'Shared restaurant';
+    await open(tester);
+    await tester.tap(find.byType(TextField));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byType(TextField)).readOnly, isTrue);
+    expect(cloud.searches, isEmpty);
+    expect(find.byKey(const ValueKey('venue-suggestions')), findsNothing);
+  });
+
+  testWidgets(
+    'meal editor autosaves a chosen branch and clears its pin after typing',
+    (tester) async {
+      memory
+        ..latitude = 14.55
+        ..longitude = 121.02
+        ..original = File('assets/images/salad.jpg').absolute.path
+        ..originalProcessed = true
+        ..job = JobStatus.ready;
+      await tester.runAsync(() async {
+        await app.repository.save(memory);
+        await app.reload();
+      });
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appProvider.overrideWith((ref) => app)],
+          child: MaterialApp(
+            theme: morslTheme(),
+            home: PlatingEditor(memory: memory),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final field = find.descendant(
+        of: find.byType(VenueField),
+        matching: find.byType(TextField),
+      );
+      await tester.ensureVisible(field);
+      await tester.enterText(field, 'Italianis');
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Italianis · Greenbelt'));
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      await tester.pumpAndSettle();
+      final chosen = await tester.runAsync(
+        () => app.repository.list('account'),
+      );
+      expect(chosen!.single.placeId, 'geoapify:branch');
+      expect(chosen.single.hasLocation, isTrue);
+      expect(find.byType(BottomSheet), findsNothing);
+      await tester.enterText(field, 'Home');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      final edited = await tester.runAsync(
+        () => app.repository.list('account'),
+      );
+      expect(edited!.single.venue, 'Home');
+      expect(edited.single.placeId, isNull);
+      expect(edited.single.latitude, isNull);
+      expect(edited.single.hasLocation, isFalse);
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

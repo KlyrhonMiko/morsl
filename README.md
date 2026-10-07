@@ -153,10 +153,16 @@ illustration and local locations; cloud actions explain their configuration stat
   evening reminders are scoped to the account,
   scheduled for unfinished drafts independently of AI completion.
 - Confirmed map locations, Geoapify maps with meal clustering, memory pin opening, companion
-  and repeat filters, offline list. Restaurant-name search finds nearby branches
-  around the photo's location or permission-based device location. Selecting a
-  result fills the venue name and map coordinates; a typed name can also be saved
-  without a pin. Deploy the updated `nearby-venues` function with app updates.
+  and repeat filters, offline list. Restaurant-name search finds branches without
+  a distance cutoff, ranking those closest to the photo's location or permission-based
+  device location first so meals can be edited after travelling home. Selecting a
+  branch from the dropdown in the meal's “Where was it?” field immediately fills
+  the venue name and confirms its map coordinates; a typed name can also be saved
+  without a pin. Typed names use Geoapify amenity autocomplete, including fast-food
+  branches, while empty queries browse nearby catering venues through Places.
+  Known non-food autocomplete categories are omitted; uncategorized amenities
+  remain selectable. Provider requests time out after eight seconds. Deploy the
+  updated `nearby-venues` function with app updates.
 - Browse-only guest access and Google sign-in for actions. Account-scoped UI, records, files,
   and reminder preferences; content-addressed storage, persistent/coalesced sync
   operations, backoff/manual retry, revision conflicts and explicit resolution.
