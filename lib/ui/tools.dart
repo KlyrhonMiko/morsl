@@ -1,4 +1,3 @@
-import 'media_image.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -9,10 +8,12 @@ import 'geoapify_attribution.dart';
 
 import '../controller.dart';
 import '../data/models.dart';
+import '../services/venue_location.dart';
 import 'theme.dart';
 import 'cloud_cutouts.dart';
 import 'account_gate.dart';
-import 'cutout_status.dart';
+import 'location_access.dart';
+import 'sharing.dart';
 
 void message(BuildContext context, String text) {
   ScaffoldMessenger.of(context).showSnackBar(
@@ -65,9 +66,12 @@ Future<bool> confirm(
 Future<void> showCapture(
   BuildContext context,
   MorslController app,
-  void Function(Memory) onOpen,
-) async {
+  void Function(Memory) onOpen, {
+  LocationAccessService locationAccess = const LocationAccessService(),
+}) async {
   if (!await requireGoogleSignIn(context, app) || !context.mounted) return;
+  await ensureLocationAccess(context, service: locationAccess);
+  if (!context.mounted || !app.canMutate) return;
   final choice = await showModalBottomSheet<(ImageSource, bool)>(
     context: context,
     isScrollControlled: true,
@@ -212,83 +216,179 @@ Future<Memory?> showVenue(
 );
 
 class VenueSheet extends StatefulWidget {
-  const VenueSheet({super.key, required this.app, required this.memory});
+  const VenueSheet({
+    super.key,
+    required this.app,
+    required this.memory,
+    this.locate = currentVenueLocation,
+  });
   final MorslController app;
   final Memory memory;
+  final Future<VenueLocation> Function() locate;
   @override
   State<VenueSheet> createState() => _VenueSheetState();
 }
 
 class _VenueSheetState extends State<VenueSheet> {
-  late TextEditingController venue, lat, lng;
-  bool loading = false;
+  late TextEditingController venue;
+  Timer? debounce;
+  int requestVersion = 0;
+  bool loading = false, searched = false, confirmed = false;
   List<Map<String, dynamic>> candidates = [];
   String? error, place;
+  bool needsLocationAccess = false;
+  double? latitude, longitude;
+  VenueLocation? origin;
+  bool usingPhotoLocation = false;
+  Future<VenueLocation>? locating;
+
   @override
   void initState() {
     super.initState();
-    final m = widget.memory;
-    venue = TextEditingController(text: m.venue);
-    lat = TextEditingController(text: m.latitude?.toString() ?? '');
-    lng = TextEditingController(text: m.longitude?.toString() ?? '');
-    place = m.placeId;
+    final memory = widget.memory;
+    venue = TextEditingController(text: memory.venue);
+    latitude = memory.latitude;
+    longitude = memory.longitude;
+    place = memory.placeId;
+    confirmed = memory.locationConfirmed;
+    if (latitude != null &&
+        longitude != null &&
+        latitude!.isFinite &&
+        longitude!.isFinite &&
+        latitude!.abs() <= 90 &&
+        longitude!.abs() <= 180) {
+      origin = (latitude: latitude!, longitude: longitude!);
+      usingPhotoLocation = true;
+    }
+    if (!confirmed && venue.text.trim().length >= 2) {
+      debounce = Timer(const Duration(milliseconds: 450), search);
+    }
   }
 
   @override
   void dispose() {
+    debounce?.cancel();
+    requestVersion++;
     venue.dispose();
-    lat.dispose();
-    lng.dispose();
     super.dispose();
   }
 
-  Future<void> nearby() async {
-    final a = double.tryParse(lat.text), b = double.tryParse(lng.text);
-    if (a == null || b == null || a.abs() > 90 || b.abs() > 180) {
-      setState(() => error = 'Enter valid coordinates or use a typed venue.');
-      return;
-    }
+  void queryChanged(String value) {
+    debounce?.cancel();
+    requestVersion++;
     setState(() {
-      loading = true;
+      place = null;
+      latitude = null;
+      longitude = null;
+      confirmed = false;
+      candidates = [];
+      searched = false;
+      loading = value.trim().length >= 2;
       error = null;
+      needsLocationAccess = false;
     });
-    try {
-      if (!widget.app.cloud.configured || widget.app.cloud.account == null) {
-        throw StateError(
-          'Nearby suggestions need a connected account. You can still type a venue and confirm your own coordinates.',
-        );
-      }
-      final places = await widget.app.cloud.venues(a, b);
-      if (mounted) {
-        setState(() => candidates = places);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => error = e.toString());
-      }
-    }
-    if (mounted) {
-      setState(() => loading = false);
+    if (value.trim().length >= 2) {
+      debounce = Timer(const Duration(milliseconds: 450), search);
     }
   }
 
-  void finish() {
-    final a = lat.text.isEmpty ? null : double.tryParse(lat.text),
-        b = lng.text.isEmpty ? null : double.tryParse(lng.text);
-    if ((lat.text.isNotEmpty || lng.text.isNotEmpty) &&
-        (a == null || b == null || a.abs() > 90 || b.abs() > 180)) {
+  Future<void> search() async {
+    debounce?.cancel();
+    final query = venue.text.trim();
+    if (query.length < 2) return;
+    final version = ++requestVersion;
+    setState(() {
+      loading = true;
+      error = null;
+      needsLocationAccess = false;
+    });
+    try {
+      if (!widget.app.cloud.configured || !widget.app.canMutate) {
+        throw StateError(
+          'Sign in with Google to find restaurants. You can also save just the venue name.',
+        );
+      }
+      if (!widget.app.online) {
+        throw StateError(
+          'Connect to the internet to find restaurants. You can still save the venue name.',
+        );
+      }
+      if (origin == null) {
+        locating ??= widget.locate();
+        try {
+          origin = await locating!;
+        } finally {
+          locating = null;
+        }
+      }
+      if (!mounted || version != requestVersion) return;
+      final results = await widget.app.cloud.venues(
+        origin!.latitude,
+        origin!.longitude,
+        query: query,
+      );
+      if (!mounted || version != requestVersion) return;
+      setState(() {
+        candidates = results;
+        searched = true;
+      });
+    } catch (failure) {
+      if (!mounted || version != requestVersion) return;
+      setState(() {
+        needsLocationAccess = failure is VenueLocationException;
+        error = failure is StateError
+            ? failure.message.toString()
+            : 'Restaurant search is unavailable right now. Try again or save just the venue name.';
+      });
+    } finally {
+      if (mounted && version == requestVersion) {
+        setState(() => loading = false);
+      }
+    }
+  }
+
+  void select(Map<String, dynamic> candidate) {
+    final lat = candidate['latitude'], lng = candidate['longitude'];
+    if (lat is! num ||
+        lng is! num ||
+        !lat.isFinite ||
+        !lng.isFinite ||
+        lat.abs() > 90 ||
+        lng.abs() > 180) {
       setState(
-        () => error = 'Latitude must be −90 to 90 and longitude −180 to 180.',
+        () => error =
+            'This restaurant has no map location. Try another result or save just the venue name.',
       );
       return;
     }
-    final m = widget.memory.copy()
+    debounce?.cancel();
+    requestVersion++;
+    setState(() {
+      venue.text = candidate['name'] as String? ?? 'Restaurant or cafe';
+      place = candidate['id'] as String?;
+      latitude = lat.toDouble();
+      longitude = lng.toDouble();
+      confirmed = true;
+      loading = false;
+      error = null;
+    });
+    FocusScope.of(context).unfocus();
+  }
+
+  Future<void> enableLocation() async {
+    FocusScope.of(context).unfocus();
+    final ready = await ensureLocationAccess(context);
+    if (ready && mounted) await search();
+  }
+
+  void finish() {
+    final memory = widget.memory.copy()
       ..venue = venue.text.trim()
       ..placeId = place
-      ..latitude = a
-      ..longitude = b
-      ..locationConfirmed = a != null && b != null;
-    Navigator.of(context).pop(m);
+      ..latitude = latitude
+      ..longitude = longitude
+      ..locationConfirmed = confirmed;
+    Navigator.of(context).pop(memory);
   }
 
   @override
@@ -308,352 +408,112 @@ class _VenueSheetState extends State<VenueSheet> {
           const SizedBox(height: 14),
           TextField(
             controller: venue,
-            onChanged: (_) => place = null,
+            onChanged: queryChanged,
+            onSubmitted: (_) => search(),
+            maxLength: 120,
+            textInputAction: TextInputAction.search,
             decoration: const InputDecoration(
-              labelText: 'Your venue label',
-              hintText: 'Home, Picnic, or a restaurant',
+              labelText: 'Search restaurants',
+              hintText: 'Try Italianis, a café, or a restaurant',
+              prefixIcon: Icon(Icons.search_rounded, size: 20),
+              counterText: '',
             ),
           ),
-          const SizedBox(height: 14),
-          const Text(
-            'Confirm or correct your coordinates to put this memory on the map. A venue without a location is welcome too.',
-            style: TextStyle(fontSize: 12, color: Palette.muted),
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: lat,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                    signed: true,
-                  ),
-                  decoration: const InputDecoration(labelText: 'Latitude'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  controller: lng,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                    signed: true,
-                  ),
-                  decoration: const InputDecoration(labelText: 'Longitude'),
-                ),
-              ),
-            ],
-          ),
-          if (widget.memory.accuracy != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                'GPS accuracy ±${widget.memory.accuracy!.round()} m · ${widget.memory.measuredAt?.toLocal() ?? ''}',
-                style: const TextStyle(fontSize: 10, color: Palette.muted),
-              ),
-            ),
           const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: loading ? null : nearby,
-            icon: const Icon(Icons.near_me_outlined, size: 17),
-            label: Text(
-              loading ? 'Finding nearby places…' : 'See nearby restaurants',
-            ),
+          Text(
+            confirmed
+                ? 'Location selected · this memory will appear on your map.'
+                : usingPhotoLocation
+                ? 'Find branches near this photo’s location. Choose one to add it to your map.'
+                : 'Find branches near you. Choose one to add it to your map.',
+            style: const TextStyle(fontSize: 12, color: Palette.muted),
           ),
-          if (error != null)
+          if (loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 12),
+                  Text(
+                    'Finding nearby restaurants…',
+                    style: TextStyle(fontSize: 12, color: Palette.muted),
+                  ),
+                ],
+              ),
+            ),
+          if (error != null) ...[
             Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
+              padding: const EdgeInsets.only(top: 12),
               child: Text(
                 error!,
                 style: const TextStyle(fontSize: 12, color: Palette.terracotta),
               ),
             ),
-          ...candidates.map(
-            (c) => ListTile(
-              title: Text(c['name'] ?? 'Restaurant or cafe'),
-              subtitle: Text(c['address'] ?? ''),
-              trailing: place == c['id']
-                  ? const Icon(
-                      Icons.check_circle_outline,
-                      color: Palette.forest,
-                    )
-                  : null,
-              onTap: () {
-                setState(() {
-                  place = c['id'];
-                  error = null;
-                });
-                message(
-                  context,
-                  'Place selected. Enter your own venue label and confirm your saved coordinates.',
-                );
-              },
-            ),
-          ),
-          if (candidates.isNotEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
+            TextButton(
+              onPressed: loading
+                  ? null
+                  : needsLocationAccess
+                  ? enableLocation
+                  : search,
               child: Text(
-                'Suggestions shown live. Only the selected place ID is saved; your venue label and coordinates are your own.',
-                style: TextStyle(fontSize: 10, color: Palette.muted),
+                needsLocationAccess ? 'Enable location' : 'Try again',
               ),
             ),
+          ],
+          if (!loading && searched && candidates.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Text(
+                'No matching restaurants nearby. Try another name, or save just the venue name.',
+                style: TextStyle(fontSize: 12, color: Palette.muted),
+              ),
+            ),
+          ...candidates.map(
+            (candidate) => ListTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 4,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              selected: place == candidate['id'],
+              selectedTileColor: Palette.sage,
+              selectedColor: Palette.forest,
+              leading: const Icon(Icons.restaurant_outlined, size: 20),
+              title: Text(candidate['name'] as String? ?? 'Restaurant or cafe'),
+              subtitle: Text(candidate['address'] as String? ?? ''),
+              trailing: place == candidate['id']
+                  ? const Icon(Icons.check_rounded, color: Palette.forest)
+                  : null,
+              onTap: () => select(candidate),
+            ),
+          ),
+          if (candidates.isNotEmpty) const GeoapifyAttribution(),
           const SizedBox(height: 18),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               onPressed: finish,
-              child: const Text('Confirm venue'),
+              child: Text(confirmed ? 'Confirm venue' : 'Save venue name'),
             ),
           ),
-          if (candidates.isNotEmpty) const GeoapifyAttribution(),
-        ],
-      ),
-    ),
-  );
-}
-
-Future<void> showEvaluation(
-  BuildContext context,
-  MorslController app,
-  Memory m,
-) => showModalBottomSheet(
-  context: context,
-  isScrollControlled: true,
-  showDragHandle: true,
-  builder: (_) => EvaluationSheet(app: app, memory: m),
-);
-
-class EvaluationSheet extends StatefulWidget {
-  const EvaluationSheet({super.key, required this.app, required this.memory});
-  final MorslController app;
-  final Memory memory;
-  @override
-  State<EvaluationSheet> createState() => _EvaluationSheetState();
-}
-
-class _EvaluationSheetState extends State<EvaluationSheet> {
-  late Memory m;
-  String? category, rating;
-  bool retrying = false;
-  @override
-  void initState() {
-    super.initState();
-    m = widget.memory.copy();
-    category = m.failureCategory;
-    rating = m.rating;
-    widget.app.addListener(_refreshMemory);
-  }
-
-  void _refreshMemory() {
-    final updated = widget.app.memories
-        .where((memory) => memory.id == m.id && memory.scope == m.scope)
-        .firstOrNull;
-    if (updated != null && mounted) {
-      setState(() => m = updated.copy());
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.app.removeListener(_refreshMemory);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => SafeArea(
-    child: SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Eyebrow('Beta / Cutout notebook'),
-          const SizedBox(height: 12),
-          const Handwriting('A little imperfect is okay.', size: 35),
-          const SizedBox(height: 12),
-          if (retrying || m.job == JobStatus.processing) ...[
-            const CutoutStatus(job: JobStatus.processing, compact: true),
-            const SizedBox(height: 12),
-          ],
-          Row(
-            children: [
-              Expanded(child: _preview(m.original, 'Original')),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _preview(
-                  m.plates.firstOrNull?.path ?? m.cutout,
-                  m.plates.length > 1
-                      ? 'Cutouts (${m.plates.length})'
-                      : 'Cutout',
-                  plates: m.plates,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Text(
-            '${m.job.name} · ${m.durationMs == null ? 'Not timed yet' : '${(m.durationMs! / 1000).toStringAsFixed(2)} s'} · attempt ${m.attempts}',
-            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            m.runtime ?? widget.app.engine.runtime,
-            style: const TextStyle(fontSize: 10, color: Palette.muted),
-          ),
-          if (m.error != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
+          if (!confirmed)
+            const Padding(
+              padding: EdgeInsets.only(top: 10),
               child: Text(
-                m.error!,
-                style: const TextStyle(fontSize: 11, color: Palette.terracotta),
+                'Home, a picnic, or a place not listed? You can keep the name without a map pin.',
+                style: TextStyle(fontSize: 11, color: Palette.muted),
               ),
             ),
-          const SizedBox(height: 20),
-          const Text(
-            'How usable is the cutout?',
-            style: TextStyle(fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            children: ['Usable', 'Needs correction', 'Unusable']
-                .map(
-                  (r) => ChoiceChip(
-                    label: Text(
-                      r,
-                      style: TextStyle(
-                        color: rating == r ? Colors.white : Palette.ink,
-                      ),
-                    ),
-                    selected: rating == r,
-                    onSelected: (v) async {
-                      setState(() {
-                        rating = r;
-                        if (r == 'Usable') {
-                          category = null;
-                        }
-                      });
-                      await widget.app.rate(m, r, category);
-                    },
-                  ),
-                )
-                .toList(),
-          ),
-          if (rating != null && rating != 'Usable') ...[
-            const SizedBox(height: 14),
-            DropdownButtonFormField<String>(
-              initialValue: category,
-              decoration: const InputDecoration(labelText: 'What went wrong?'),
-              items: [
-                'Missing food',
-                'Included clutter',
-                'Damaged edges',
-                'Merged subjects',
-                'No subject',
-              ].map((f) => DropdownMenuItem(value: f, child: Text(f))).toList(),
-              onChanged: (v) async {
-                setState(() => category = v);
-                await widget.app.rate(m, rating!, v);
-              },
-            ),
-          ],
-          const SizedBox(height: 20),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              FilledButton.icon(
-                onPressed: retrying || m.job == JobStatus.processing
-                    ? null
-                    : () async {
-                        setState(() => retrying = true);
-                        await guarded(context, () async {
-                          await widget.app.retry(m);
-                          final updated = widget.app.memories
-                              .where((e) => e.id == m.id)
-                              .firstOrNull;
-                          if (updated != null && mounted) {
-                            setState(() => m = updated.copy());
-                          }
-                        });
-                        if (mounted) {
-                          setState(() => retrying = false);
-                        }
-                      },
-                icon: const Icon(Icons.refresh, size: 17),
-                label: Text(
-                  retrying || m.job == JobStatus.processing
-                      ? 'Processing…'
-                      : 'Retry cutout',
-                ),
-              ),
-              TextButton.icon(
-                onPressed: () => guarded(context, () async {
-                  final file = await widget.app.exportEvaluations();
-                  widget.app.requireGoogleAccount();
-                  if (context.mounted) {
-                    await shareFile(context, file, 'morsl cutout evaluations');
-                  }
-                }),
-                icon: const Icon(Icons.ios_share, size: 17),
-                label: const Text('Export results'),
-              ),
-            ],
-          ),
         ],
       ),
     ),
-  );
-  Widget _preview(
-    String? path,
-    String label, {
-    List<Plate> plates = const [],
-  }) => Column(
-    children: [
-      AspectRatio(
-        aspectRatio: 1,
-        child: Container(
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: Palette.sage,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: plates.length > 1
-              ? GridView.count(
-                  padding: const EdgeInsets.all(8),
-                  crossAxisCount: plates.length <= 4 ? 2 : 3,
-                  children: [
-                    for (final plate in plates)
-                      Image(
-                        image: mediaImage(plate.path),
-                        fit: BoxFit.contain,
-                        errorBuilder: (c, e, s) =>
-                            const Icon(Icons.broken_image_outlined),
-                      ),
-                  ],
-                )
-              : path == null
-              ? Center(
-                  child: Text(
-                    m.job == JobStatus.processing || m.job == JobStatus.queued
-                        ? 'Preparing cutouts…'
-                        : 'No cutout available',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 11, color: Palette.muted),
-                  ),
-                )
-              : Image(
-                  image: mediaImage(path),
-                  fit: BoxFit.contain,
-                  errorBuilder: (c, e, s) =>
-                      const Icon(Icons.broken_image_outlined),
-                ),
-        ),
-      ),
-      const SizedBox(height: 7),
-      Text(label, style: const TextStyle(fontSize: 11, color: Palette.muted)),
-    ],
   );
 }
 
@@ -670,7 +530,7 @@ Future<void> shareFile(BuildContext context, String file, String title) async {
   );
 }
 
-Future<void> showInvite(
+Future<String?> showInvite(
   BuildContext context,
   MorslController app,
   Memory memory,
@@ -680,62 +540,19 @@ Future<void> showInvite(
       context,
       'Example memories stay on this device. Capture a real meal to invite someone.',
     );
-    return;
+    return null;
   }
-  if (app.cloud.account == null) {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
-    return;
-  }
-  final email = TextEditingController();
-  await showDialog(
+  if (!app.canMutate) return null;
+  final recipient = await showModalBottomSheet<String>(
     context: context,
-    builder: (c) => AlertDialog(
-      title: const Text('Save a seat for someone'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Text(
-            'Invite an existing morsl account. They’ll have their own caption, feeling, and layout after accepting.',
-            style: TextStyle(fontSize: 12),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: email,
-            keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(labelText: 'Their account email'),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(c),
-          child: const Text('Maybe later'),
-        ),
-        FilledButton(
-          onPressed: () => guarded(c, () async {
-            await app.sync(manual: true);
-            if (app.operations.any((o) => o.entity == memory.id)) {
-              throw StateError(
-                'Back up this memory successfully before inviting someone.',
-              );
-            }
-            await app.cloud.invite(memory.id, email.text);
-            if (c.mounted) {
-              Navigator.pop(c);
-              message(
-                context,
-                'Invitation sent. Photos stay private until they accept.',
-              );
-            }
-          }),
-          child: const Text('Send invitation'),
-        ),
-      ],
-    ),
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (_) => MealShareSheet(app: app, memory: memory),
   );
-  email.dispose();
+  if (recipient != null && context.mounted) {
+    message(context, 'Invitation sent. Photos stay private until they accept.');
+  }
+  return recipient;
 }
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -858,6 +675,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   spacing: 10,
                   runSpacing: 10,
                   children: [
+                    OutlinedButton.icon(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => FriendsScreen(app: app),
+                        ),
+                      ),
+                      icon: const Icon(Icons.people_outline_rounded, size: 18),
+                      label: const Text('Friends'),
+                    ),
                     FilledButton.icon(
                       onPressed: app.busySync
                           ? null
@@ -983,24 +810,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(height: 30),
               const Divider(),
               const SizedBox(height: 24),
-              const Eyebrow('Beta notebook'),
-              const SizedBox(height: 16),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.auto_awesome_outlined,
-                  color: Palette.forest,
-                ),
-                title: const Text(
-                  'Cutouts & beta tools',
-                  style: TextStyle(fontSize: 14),
-                ),
-                trailing: const Icon(Icons.arrow_forward, size: 18),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const BetaToolsScreen()),
-                ),
-              ),
               ListTile(
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.mail_outline, color: Palette.forest),
@@ -1034,198 +843,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         ),
       ),
-    ),
-  );
-}
-
-class BetaToolsScreen extends ConsumerStatefulWidget {
-  const BetaToolsScreen({super.key});
-  @override
-  ConsumerState<BetaToolsScreen> createState() => _BetaToolsScreenState();
-}
-
-class _BetaToolsScreenState extends ConsumerState<BetaToolsScreen> {
-  late MorslController app;
-  @override
-  void initState() {
-    super.initState();
-    app = ref.read(appProvider);
-    app.addListener(changed);
-  }
-
-  void changed() {
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  @override
-  void dispose() {
-    app.removeListener(changed);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Beta notebook', style: TextStyle(fontSize: 17)),
-    ),
-    body: ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        const Handwriting(
-          'Good memories. Better cutouts.',
-          size: 35,
-          color: Palette.forest,
-        ),
-        const SizedBox(height: 14),
-        Text(
-          app.engine.runtime,
-          style: const TextStyle(fontSize: 11, color: Palette.muted),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          !app.cloudCutoutsSignedIn
-              ? 'Sign in for cloud extraction'
-              : !app.cloudCutoutsAllowed
-              ? 'Cloud extraction is off'
-              : app.modelReady
-              ? 'Cloud extraction is available'
-              : 'Cloud availability has not been confirmed',
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: [
-            OutlinedButton.icon(
-              onPressed: () => guarded(context, () async {
-                final file = await app.exportEvaluations();
-                app.requireGoogleAccount();
-                if (context.mounted) {
-                  await shareFile(context, file, 'morsl AI evaluations');
-                }
-              }),
-              icon: const Icon(Icons.ios_share, size: 18),
-              label: const Text('Export evaluations'),
-            ),
-          ],
-        ),
-        if (app.notice != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            child: Text(
-              app.notice!,
-              style: const TextStyle(fontSize: 12, color: Palette.muted),
-            ),
-          ),
-        const SizedBox(height: 22),
-        const Divider(),
-        const SizedBox(height: 16),
-        const Eyebrow('Processing queue'),
-        const SizedBox(height: 10),
-        ...app.memories.map(
-          (m) => ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(
-              m.venue.isEmpty ? 'A little meal' : m.venue,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-            subtitle: Text(
-              '${m.job.name} · ${m.durationMs ?? 0} ms · ${m.rating ?? 'Not rated'}',
-              style: const TextStyle(fontSize: 11, color: Palette.muted),
-            ),
-            trailing: const Icon(Icons.compare_outlined, size: 20),
-            onTap: () => showEvaluation(context, app, m),
-          ),
-        ),
-        const SizedBox(height: 24),
-        const Divider(),
-        const SizedBox(height: 16),
-        const Eyebrow('Backup queue'),
-        const SizedBox(height: 10),
-        if (app.operations.isEmpty)
-          const Text(
-            'No pending operations.',
-            style: TextStyle(fontSize: 12, color: Palette.muted),
-          ),
-        ...app.operations.map(
-          (o) => ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(o.entity, style: const TextStyle(fontSize: 10)),
-            subtitle: Text(
-              'Attempt ${o.attempts} · ${o.error ?? 'Queued'}',
-              style: const TextStyle(fontSize: 11, color: Palette.muted),
-            ),
-            trailing: (o.error?.toLowerCase().contains('conflict') ?? false)
-                ? TextButton(
-                    onPressed: () => guarded(context, () async {
-                      final remote = await app.cloudVersion(o.entity);
-                      final local = app.memories
-                          .where((m) => m.id == o.entity)
-                          .firstOrNull;
-                      if (local == null || !context.mounted) {
-                        return;
-                      }
-                      final decision = await showDialog<bool>(
-                        context: context,
-                        builder: (c) => AlertDialog(
-                          title: const Text('Two versions of a little memory'),
-                          content: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'This device: ${local.caption.isEmpty ? '(no caption)' : local.caption}\n${local.background} paper · ${local.layout}',
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'Cloud: ${remote.caption.isEmpty ? '(no caption)' : remote.caption}\n${remote.background} paper · ${remote.layout}',
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                              const SizedBox(height: 16),
-                              const Text(
-                                'Choose the version to keep. Shared meal details follow the creator’s choice.',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Palette.muted,
-                                ),
-                              ),
-                            ],
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(c),
-                              child: const Text('Later'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () => Navigator.pop(c, false),
-                              child: const Text('Use cloud version'),
-                            ),
-                            FilledButton(
-                              onPressed: () => Navigator.pop(c, true),
-                              child: const Text('Keep this device'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (decision != null) {
-                        await app.resolveConflict(remote, keepLocal: decision);
-                      }
-                    }),
-                    child: const Text('Review'),
-                  )
-                : null,
-          ),
-        ),
-        if (app.cloud.account != null)
-          OutlinedButton(
-            onPressed: app.busySync ? null : () => app.sync(manual: true),
-            child: const Text('Retry backup now'),
-          ),
-      ],
     ),
   );
 }
@@ -1300,6 +917,16 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
           'A seat at the table',
           style: TextStyle(fontSize: 17),
         ),
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => FriendsScreen(app: app)),
+            ),
+            icon: const Icon(Icons.people_outline_rounded, size: 18),
+            label: const Text('Friends'),
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(24),

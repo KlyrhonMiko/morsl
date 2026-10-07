@@ -25,6 +25,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
   String? lastAuthError;
   String search = '', companion = 'All people';
   bool onlyBookmarks = false, showArchived = false;
+  bool showDraftTip = true;
   DateTimeRange? dates;
   @override
   void initState() {
@@ -50,6 +51,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
           companion = 'All people';
           onlyBookmarks = false;
           showArchived = false;
+          showDraftTip = true;
           dates = null;
         }
       });
@@ -159,17 +161,18 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                                 ),
                               ),
                               borderRadius: BorderRadius.circular(24),
-                              child: Container(
-                                width: 48,
-                                height: 48,
-                                decoration: const BoxDecoration(
-                                  color: Palette.sage,
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.person_outline_rounded,
-                                  color: Palette.forest,
-                                  size: 22,
+                              child: SizedBox.square(
+                                dimension: 48,
+                                child: Center(
+                                  child: Container(
+                                    width: 32,
+                                    height: 32,
+                                    decoration: const BoxDecoration(
+                                      color: Palette.sage,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: _accountPhoto(),
+                                  ),
                                 ),
                               ),
                             ),
@@ -243,6 +246,29 @@ class _MorslHomeState extends ConsumerState<MorslHome>
       );
     },
   );
+  Widget _accountPhoto() {
+    const fallback = Icon(
+      Icons.person_outline_rounded,
+      color: Palette.forest,
+      size: 20,
+    );
+    final photoUrl = app.cloud.profilePhotoUrl;
+    if (photoUrl == null) return fallback;
+    return ClipOval(
+      child: Image.network(
+        photoUrl,
+        key: ValueKey('${app.scope}:$photoUrl'),
+        width: 32,
+        height: 32,
+        fit: BoxFit.cover,
+        excludeFromSemantics: true,
+        loadingBuilder: (context, child, progress) =>
+            progress == null ? child : fallback,
+        errorBuilder: (context, error, stackTrace) => fallback,
+      ),
+    );
+  }
+
   Widget _beta() => Container(
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
     decoration: BoxDecoration(
@@ -523,7 +549,10 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                 _hero(wide),
                 const SizedBox(height: 32),
               ],
-              if (draft && items.isNotEmpty) ...[
+              if (draft &&
+                  !showArchived &&
+                  showDraftTip &&
+                  items.isNotEmpty) ...[
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -544,13 +573,14 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                           style: TextStyle(fontSize: 12, color: Palette.forest),
                         ),
                       ),
-                      TextButton(
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => const BetaToolsScreen(),
-                          ),
+                      IconButton(
+                        onPressed: () => setState(() => showDraftTip = false),
+                        tooltip: 'Dismiss meal tip',
+                        icon: const Icon(
+                          Icons.close_rounded,
+                          size: 18,
+                          color: Palette.forest,
                         ),
-                        child: const Text('AI tools'),
                       ),
                     ],
                   ),
@@ -590,17 +620,9 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                             Expanded(child: searchBox),
                             const SizedBox(width: 14),
                             _dateButton(),
-                            const SizedBox(width: 10),
-                            _archiveButton(),
                           ],
                         )
-                      : Row(
-                          children: [
-                            Expanded(child: searchBox),
-                            const SizedBox(width: 4),
-                            _archiveButton(),
-                          ],
-                        );
+                      : searchBox;
                 },
               ),
               const SizedBox(height: 15),
@@ -627,53 +649,61 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                     () => setState(() => onlyBookmarks = !onlyBookmarks),
                     icon: Icons.favorite_border,
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    constraints: const BoxConstraints(minHeight: 48),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Palette.line),
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        value: people.contains(companion)
-                            ? companion
-                            : 'All people',
-                        icon: const Icon(Icons.keyboard_arrow_down, size: 17),
-                        style: const TextStyle(
-                          fontFamily: 'Quicksand',
-                          color: Palette.ink,
-                          fontSize: 12,
-                        ),
-                        items: people
-                            .map(
-                              (p) => DropdownMenuItem(value: p, child: Text(p)),
-                            )
-                            .toList(),
-                        onChanged: (v) => setState(() => companion = v!),
-                      ),
-                    ),
-                  ),
+                  _peopleFilter(people),
                 ],
               ),
               const SizedBox(height: 24),
               Row(
                 children: [
                   Expanded(
-                    child: Text(
-                      draft ? 'Unfinished drafts' : month,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          showArchived
+                              ? (draft
+                                    ? 'Archived drafts'
+                                    : 'Archived memories')
+                              : draft
+                              ? 'Unfinished drafts'
+                              : month,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${items.length} ${items.length == 1 ? 'memory' : 'memories'}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Palette.muted,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(width: 12),
-                  Text(
-                    '${items.length} ${items.length == 1 ? 'memory' : 'memories'}',
-                    style: const TextStyle(fontSize: 11, color: Palette.muted),
+                  TextButton.icon(
+                    onPressed: () =>
+                        setState(() => showArchived = !showArchived),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Palette.forest,
+                      textStyle: const TextStyle(
+                        fontFamily: 'Quicksand',
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    icon: Icon(
+                      showArchived
+                          ? Icons.arrow_back_rounded
+                          : Icons.archive_outlined,
+                      size: 16,
+                    ),
+                    label: Text(showArchived ? 'Active' : 'Archived'),
                   ),
                 ],
               ),
@@ -681,26 +711,37 @@ class _MorslHomeState extends ConsumerState<MorslHome>
               if (items.isEmpty)
                 EmptyState(
                   icon: draft ? Icons.inbox_outlined : Icons.menu_book_outlined,
-                  title:
-                      search.isNotEmpty ||
-                          onlyBookmarks ||
-                          companion != 'All people'
+                  title: showArchived
+                      ? 'No archived memories here.'
+                      : search.isNotEmpty ||
+                            onlyBookmarks ||
+                            companion != 'All people'
                       ? 'No little bites here yet.'
                       : draft
                       ? 'All caught up.'
                       : 'Your story starts at the table.',
-                  message:
-                      search.isNotEmpty ||
-                          onlyBookmarks ||
-                          companion != 'All people'
+                  message: showArchived
+                      ? 'Archived memories appear here. Return to your active memories to keep browsing.'
+                      : search.isNotEmpty ||
+                            onlyBookmarks ||
+                            companion != 'All people'
                       ? 'Try a different search or loosen your filters.'
                       : draft
                       ? 'Capture a meal and we’ll keep it here for you.'
                       : 'Capture your first meal. Keep the moment.',
                   action: FilledButton.icon(
-                    onPressed: capture,
-                    icon: const Icon(Icons.add_a_photo_outlined, size: 18),
-                    label: const Text('Capture a meal'),
+                    onPressed: showArchived
+                        ? () => setState(() => showArchived = false)
+                        : capture,
+                    icon: Icon(
+                      showArchived
+                          ? Icons.arrow_back_rounded
+                          : Icons.add_a_photo_outlined,
+                      size: 18,
+                    ),
+                    label: Text(
+                      showArchived ? 'Show active memories' : 'Capture a meal',
+                    ),
                   ),
                 ),
               if (items.isNotEmpty)
@@ -794,6 +835,87 @@ class _MorslHomeState extends ConsumerState<MorslHome>
     );
   }
 
+  Widget _peopleFilter(Iterable<String> people) {
+    final current = people.contains(companion) ? companion : 'All people';
+    final filtered = current != 'All people';
+    return MenuAnchor(
+      style: MenuStyle(
+        backgroundColor: const WidgetStatePropertyAll(Palette.paper),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        elevation: const WidgetStatePropertyAll(3),
+        padding: const WidgetStatePropertyAll(EdgeInsets.all(6)),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: Palette.line),
+          ),
+        ),
+      ),
+      menuChildren: people.map((person) {
+        final selected = person == current;
+        return MenuItemButton(
+          onPressed: () => setState(() => companion = person),
+          style: ButtonStyle(
+            backgroundColor: selected
+                ? const WidgetStatePropertyAll(Palette.sage)
+                : null,
+            foregroundColor: const WidgetStatePropertyAll(Palette.ink),
+            minimumSize: const WidgetStatePropertyAll(Size(180, 48)),
+            shape: WidgetStatePropertyAll(
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            textStyle: const WidgetStatePropertyAll(
+              TextStyle(
+                fontFamily: 'Quicksand',
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          trailingIcon: selected
+              ? const Icon(Icons.check_rounded, size: 18, color: Palette.forest)
+              : const SizedBox(width: 18),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 220),
+            child: Text(person, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
+        );
+      }).toList(),
+      builder: (context, controller, child) => ChoiceChip(
+        tooltip: 'Filter by person',
+        label: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                current,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: filtered ? Colors.white : Palette.ink,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Icon(
+              controller.isOpen
+                  ? Icons.keyboard_arrow_up_rounded
+                  : Icons.keyboard_arrow_down_rounded,
+              size: 16,
+              color: filtered ? Colors.white : Palette.muted,
+            ),
+          ],
+        ),
+        selected: filtered,
+        onSelected: (_) =>
+            controller.isOpen ? controller.close() : controller.open(),
+        showCheckmark: false,
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 8),
+      ),
+    );
+  }
+
   Widget _filterChip(
     String title,
     bool selected,
@@ -837,15 +959,6 @@ class _MorslHomeState extends ConsumerState<MorslHome>
     }
   }
 
-  Widget _archiveButton() => IconButton(
-    onPressed: () => setState(() => showArchived = !showArchived),
-    tooltip: showArchived ? 'Show active memories' : 'Show archived memories',
-    icon: Icon(
-      showArchived ? Icons.unarchive_outlined : Icons.archive_outlined,
-      color: showArchived ? Palette.terracotta : Palette.muted,
-      size: 20,
-    ),
-  );
   Widget _hero(bool wide) => Container(
     height:
         (wide ? 214 : 148) *

@@ -25,7 +25,13 @@ import 'package:morsl/services/creations.dart';
 import 'package:morsl/ui/theme.dart';
 import 'package:morsl/ui/home.dart';
 import 'package:morsl/ui/map_screen.dart';
+import 'package:morsl/services/venue_location.dart';
 import 'package:morsl/ui/tools.dart';
+
+class DisabledTestLocation extends LocationAccessService {
+  @override
+  Future<LocationAccessStatus> check() async => LocationAccessStatus.serviceOff;
+}
 
 class LocalTestTiles extends TileProvider {
   @override
@@ -163,65 +169,6 @@ void main() {
     child: child,
   );
 
-  testWidgets('cutout notebook updates when SAM3 plates finish processing', (
-    tester,
-  ) async {
-    final memory = app.memories.first
-      ..cutout = null
-      ..job = JobStatus.processing;
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: morslTheme(),
-        home: Scaffold(
-          body: EvaluationSheet(app: app, memory: memory),
-        ),
-      ),
-    );
-    await tester.pump();
-    expect(find.text('Preparing cutouts…'), findsOneWidget);
-    final retry = tester.widget<FilledButton>(
-      find.widgetWithText(FilledButton, 'Processing…'),
-    );
-    expect(retry.onPressed, isNull);
-
-    final completed = memory.copy()
-      ..job = JobStatus.ready
-      ..plates = [
-        Plate(
-          id: 'dish-1',
-          path: 'assets/images/salad-cutout.png',
-          mask: solidPlateMask(),
-        ),
-        Plate(
-          id: 'dish-2',
-          path: 'assets/images/pasta-cutout.png',
-          mask: solidPlateMask(),
-        ),
-      ];
-    await tester.runAsync(() async {
-      await app.repository.save(completed, enqueue: false);
-      await app.reload();
-    });
-    await tester.pump();
-    expect(find.text('Preparing cutouts…'), findsNothing);
-    expect(find.text('Cutouts (2)'), findsOneWidget);
-    expect(find.byType(GridView), findsOneWidget);
-    expect(find.text('Retry cutout'), findsOneWidget);
-    final images = tester.widgetList<Image>(find.byType(Image));
-    expect(images.where((image) => image.image is FileImage).length, 3);
-
-    final single = completed.copy()..plates = [completed.plates.first];
-    await tester.runAsync(() async {
-      await app.repository.save(single, enqueue: false);
-      await app.reload();
-    });
-    await tester.pump();
-    expect(find.text('Cutout'), findsOneWidget);
-    expect(find.byType(GridView), findsNothing);
-    expect(find.text('No cutout available'), findsNothing);
-    await tester.pumpWidget(const SizedBox());
-  });
-
   testWidgets('editor shows processing feedback and removes it on completion', (
     tester,
   ) async {
@@ -350,6 +297,43 @@ void main() {
     },
   );
 
+  testWidgets(
+    'capture checks location before showing camera and gallery choices',
+    (tester) async {
+      await tester.pumpWidget(
+        host(
+          MaterialApp(
+            theme: morslTheme(),
+            home: Scaffold(
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () => showCapture(
+                    context,
+                    app,
+                    (_) {},
+                    locationAccess: DisabledTestLocation(),
+                  ),
+                  child: const Text('Add photo'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Add photo'));
+      await tester.pumpAndSettle();
+      expect(find.text('Turn on location'), findsOneWidget);
+      expect(find.text('Take a photo'), findsNothing);
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
+      expect(find.text('Take a photo'), findsOneWidget);
+      expect(find.text('Choose from photos'), findsOneWidget);
+      Navigator.of(tester.element(find.text('Take a photo'))).pop();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('history search and primary destinations work on a small phone', (
     tester,
   ) async {
@@ -374,6 +358,55 @@ void main() {
     expect(find.text('A little map of your life.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+  testWidgets('draft people menu filters and resets on a small phone', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(375, 812);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    for (final memory in app.memories) {
+      memory.draft = true;
+    }
+    app.navigate(2);
+    await tester.pumpWidget(host(const MorslApp()));
+    await tester.pumpAndSettle();
+    final people = find.widgetWithText(ChoiceChip, 'All people');
+    final favorites = find.widgetWithText(ChoiceChip, 'Would go again');
+    expect(tester.getSize(people).height, tester.getSize(favorites).height);
+    await tester.tap(people);
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+    await tester.tap(find.widgetWithText(MenuItemButton, 'Sam'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 memory'), findsOneWidget);
+    expect(find.byType(MenuItemButton), findsNothing);
+    expect(
+      tester
+          .widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Sam'))
+          .selected,
+      isTrue,
+    );
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Sam'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(MenuItemButton, 'All people'));
+    await tester.pumpAndSettle();
+    expect(find.text('3 memories'), findsOneWidget);
+    await tester.tap(find.byTooltip('Dismiss meal tip'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Enjoy your meal first.'), findsNothing);
+    expect(find.text('3 memories'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Archived'));
+    await tester.pumpAndSettle();
+    expect(find.text('Archived drafts'), findsOneWidget);
+    expect(find.text('No archived memories here.'), findsOneWidget);
+    await tester.tap(find.text('Show active memories'));
+    await tester.pumpAndSettle();
+    expect(find.text('3 memories'), findsOneWidget);
+    expect(find.textContaining('Enjoy your meal first.'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('a ready draft can be edited later, reopened, and finished', (
     tester,
   ) async {
@@ -514,7 +547,7 @@ void main() {
       });
     },
   );
-  testWidgets('removing one plate preserves the other plate and autosaves', (
+  testWidgets('swiping selects the plate to remove and autosaves the other', (
     tester,
   ) async {
     final memory = app.memories.first.copy()
@@ -544,9 +577,13 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Plate 1'));
-    await tester.tap(find.text('Plate 1'));
+    expect(find.text('Plate 1 of 2'), findsOneWidget);
+    await tester.drag(
+      find.byKey(const ValueKey('plate-preview-pages')),
+      const Offset(-500, 0),
+    );
     await tester.pumpAndSettle();
+    expect(find.text('Plate 2 of 2'), findsOneWidget);
     await tester.ensureVisible(find.text('Remove plate'));
     await tester.tap(find.text('Remove plate'));
     await tester.pump(const Duration(milliseconds: 400));
@@ -557,9 +594,9 @@ void main() {
     final saved = (await tester.runAsync(
       () => app.repository.list('guest'),
     ))!.single;
-    expect(saved.plates.single.id, 'two');
-    expect(saved.plates.single.x, .6);
-    expect(saved.plates.single.rotation, .4);
+    expect(saved.plates.single.id, 'one');
+    expect(saved.plates.single.x, .1);
+    expect(saved.plates.single.rotation, 0);
     expect(saved.platesEdited, true);
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() async {
@@ -601,8 +638,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Clean up edges'), findsOneWidget);
       expect(find.text('Add a missed plate'), findsOneWidget);
-      await tester.ensureVisible(find.text('Separate dishes'));
-      await tester.tap(find.text('Separate dishes'));
+      expect(find.text('Separate dishes'), findsNothing);
+      await tester.tap(find.byTooltip('Memory actions'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Regenerate plate cutouts'));
       await tester.pump();
       await tester.runAsync(
         () => Future<void>.delayed(const Duration(milliseconds: 250)),
@@ -910,59 +949,76 @@ void main() {
     });
   }
 
-  testWidgets('render the Plating editor', (tester) async {
-    tester.view.physicalSize = const Size(1200, 1000);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-    final memory = app.memories.first.copy()..draft = true;
-    await tester.runAsync(() async {
-      await app.repository.save(memory);
-      final provider = FileImage(File(memory.displayPath));
-      final cacheKey = await provider.obtainKey(const ImageConfiguration());
-      final codec = await ui.instantiateImageCodec(
-        await File(memory.displayPath).readAsBytes(),
-        targetWidth: 900,
-      );
-      final frame = await codec.getNextFrame();
-      PaintingBinding.instance.imageCache.evict(cacheKey);
-      PaintingBinding.instance.imageCache.putIfAbsent(
-        cacheKey,
-        () => OneFrameImageStreamCompleter(
-          Future.value(ImageInfo(image: frame.image)),
-        ),
-      );
-    });
-    final key = GlobalKey();
-    await tester.pumpWidget(
-      host(
-        RepaintBoundary(
-          key: key,
-          child: MaterialApp(
-            debugShowCheckedModeBanner: false,
-            theme: morslTheme(),
-            home: PlatingEditor(memory: memory),
+  for (final size in [const Size(1200, 1000), const Size(375, 812)]) {
+    testWidgets('render the Plating editor at ${size.width.toInt()}', (
+      tester,
+    ) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final memory = app.memories.first.copy()
+        ..draft = true
+        ..plates = [
+          Plate(
+            id: 'first-preview',
+            path: app.memories.first.cutout!,
+            mask: solidPlateMask(),
+          ),
+          Plate(
+            id: 'second-preview',
+            path: app.memories.first.cutout!,
+            mask: solidPlateMask(),
+          ),
+        ];
+      await tester.runAsync(() async {
+        await app.repository.save(memory);
+        final provider = FileImage(File(memory.displayPath));
+        final cacheKey = await provider.obtainKey(const ImageConfiguration());
+        final codec = await ui.instantiateImageCodec(
+          await File(memory.displayPath).readAsBytes(),
+          targetWidth: 900,
+        );
+        final frame = await codec.getNextFrame();
+        PaintingBinding.instance.imageCache.evict(cacheKey);
+        PaintingBinding.instance.imageCache.putIfAbsent(
+          cacheKey,
+          () => OneFrameImageStreamCompleter(
+            Future.value(ImageInfo(image: frame.image)),
+          ),
+        );
+      });
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        host(
+          RepaintBoundary(
+            key: key,
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: morslTheme(),
+              home: PlatingEditor(memory: memory),
+            ),
           ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
-    await tester.runAsync(() async {
-      final boundary =
-          key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
-      final image = await boundary.toImage();
-      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-      await Directory('output/previews').create(recursive: true);
-      await File(
-        'output/previews/plating-1200.png',
-      ).writeAsBytes(bytes!.buffer.asUint8List());
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.runAsync(() async {
+        final boundary =
+            key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+        final image = await boundary.toImage();
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+        await Directory('output/previews').create(recursive: true);
+        await File(
+          'output/previews/plating-${size.width.toInt()}.png',
+        ).writeAsBytes(bytes!.buffer.asUint8List());
+      });
+      await tester.pumpWidget(const SizedBox());
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
     });
-    await tester.pumpWidget(const SizedBox());
-    await tester.runAsync(() async {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-    });
-  });
+  }
   for (final size in [
     const Size(1440, 1000),
     const Size(375, 812),

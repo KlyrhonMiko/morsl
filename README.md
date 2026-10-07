@@ -61,6 +61,10 @@ Rendered UI previews are in `output/previews/`.
 
 1. Create a fresh Supabase project. Apply
    `supabase/migrations/202610050001_beta.sql` using the Supabase CLI or SQL editor.
+   Apply subsequent migrations too, including `20261007052824_friends.sql` for
+   mutual friend requests. Find Friends in Settings or the meal invitations inbox;
+   accepted friends can be selected under “Who was at the table?” to invite them
+   to the whole meal and all its plates. A meal invitation still requires acceptance.
    This creates meal metadata, RLS policies, and RPCs. Images now use private
    Cloudflare R2; follow [image storage setup](IMAGE_STORAGE.md) to create the bucket,
    set server secrets, and deploy `image-storage`. This fresh baseline does not
@@ -123,8 +127,10 @@ illustration and local locations; cloud actions explain their configuration stat
   evening reminders are scoped to the account,
   scheduled for unfinished drafts independently of AI completion.
 - Confirmed map locations, Geoapify maps with meal clustering, memory pin opening, companion
-  and repeat filters, offline list. Venue suggestions are live and user-confirmed.
-  Only place IDs persist; user-entered labels and captured coordinates stay separate.
+  and repeat filters, offline list. Restaurant-name search finds nearby branches
+  around the photo's location or permission-based device location. Selecting a
+  result fills the venue name and map coordinates; a typed name can also be saved
+  without a pin. Deploy the updated `nearby-venues` function with app updates.
 - Browse-only guest access and Google sign-in for actions. Account-scoped UI, records, files,
   and reminder preferences; content-addressed storage, persistent/coalesced sync
   operations, backoff/manual retry, revision conflicts and explicit resolution.
@@ -132,9 +138,8 @@ illustration and local locations; cloud actions explain their configuration stat
   leaving, uploader photo removal, personal archive, and confirmed creator deletion.
   Revocation is checked before asset restoration and purges app-managed local caches.
   Deleted meals retain a server tombstone to prevent stale-device resurrection.
-- Cutout comparisons, quality/failure labels, timings, runtime details,
-  processing and backup queue status, JSON evaluation export.
-  Local events include editing duration, revisits, sync failures, and restoration.
+- Local processing records include timings and runtime details. Local events
+  include editing duration, revisits, sync failures, and restoration.
 
 ## Modal timing logs
 

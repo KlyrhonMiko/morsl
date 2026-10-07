@@ -15,6 +15,7 @@ import 'tools.dart';
 import 'cloud_cutouts.dart';
 import 'account_gate.dart';
 import 'cutout_status.dart';
+import 'plate_preview_pager.dart';
 
 class PlatingEditor extends ConsumerStatefulWidget {
   const PlatingEditor({super.key, required this.memory});
@@ -383,6 +384,40 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     unawaited(app.sync());
   }
 
+  Future<void> shareMeal() async {
+    if (!memory.ownsMeal || !app.canMutate || app.scope != memory.scope) return;
+    if (memory.draft &&
+        memory.plates.isEmpty &&
+        memory.cutout?.isNotEmpty != true) {
+      message(
+        context,
+        'Add a plate cutout before finishing and sharing this meal.',
+      );
+      return;
+    }
+    debounce?.cancel();
+    final wasDraft = memory.draft;
+    memory.draft = false;
+    await _persist();
+    if (!mounted || app.scope != memory.scope) return;
+    if (status.startsWith('Could not')) {
+      memory.draft = wasDraft;
+      message(context, status);
+      return;
+    }
+    setState(() {});
+    final invited = await showInvite(context, app, memory);
+    if (invited != null &&
+        mounted &&
+        app.scope == memory.scope &&
+        !memory.companions.contains(invited)) {
+      change(() {
+        memory.companions = [...memory.companions, invited];
+        companions.text = memory.companions.join(', ');
+      });
+    }
+  }
+
   @override
   void dispose() {
     debounce?.cancel();
@@ -413,21 +448,12 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
             ),
             actions: [
-              if (!memory.draft && memory.ownsMeal)
-                IconButton(
-                  onPressed: () async {
-                    debounce?.cancel();
-                    await _persist();
-                    if (context.mounted) {
-                      await showInvite(context, app, memory);
-                    }
-                  },
-                  tooltip: 'Invite someone to this meal',
-                  icon: const Icon(Icons.person_add_alt_1_outlined, size: 21),
-                ),
               PopupMenuButton<String>(
                 tooltip: 'Memory actions',
                 onSelected: (v) async {
+                  if (v == 'retry-cutouts') {
+                    await addPlate(automatic: true);
+                  }
                   if (v == 'archive') {
                     debounce?.cancel();
                     memory.archived = !memory.archived;
@@ -513,6 +539,15 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                   }
                 },
                 itemBuilder: (_) => [
+                  if (app.engine is MultiSubjectSegmentationEngine &&
+                      !findingPlates &&
+                      memory.job != JobStatus.processing &&
+                      memory.job != JobStatus.queued &&
+                      memory.original.isNotEmpty)
+                    const PopupMenuItem(
+                      value: 'retry-cutouts',
+                      child: Text('Regenerate plate cutouts'),
+                    ),
                   PopupMenuItem(
                     value: 'archive',
                     child: Text(
@@ -562,30 +597,41 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                     child: ConstrainedBox(
                       constraints: BoxConstraints(
                         maxWidth: wide ? 440 : 430,
-                        maxHeight: 440,
+                        maxHeight:
+                            memory.plates.isNotEmpty &&
+                                !findingPlates &&
+                                memory.job == JobStatus.ready
+                            ? double.infinity
+                            : 440,
                       ),
                       child: CutoutPhoto(
+                        interactive: true,
                         job: findingPlates ? JobStatus.processing : memory.job,
-                        child: PlateImage(
-                          path:
-                              findingPlates ||
-                                  memory.job == JobStatus.processing ||
-                                  memory.job == JobStatus.queued
-                              ? memory.original
-                              : selectedPlate?.path ??
-                                    memory.cutout ??
-                                    memory.original,
-                        ),
+                        child:
+                            memory.plates.isNotEmpty &&
+                                !findingPlates &&
+                                memory.job == JobStatus.ready
+                            ? PlatePreviewPager(
+                                plates: memory.plates,
+                                selectedId: selectedPlate?.id,
+                                onSelected: (id) =>
+                                    setState(() => selectedPlateId = id),
+                              )
+                            : PlateImage(
+                                path:
+                                    findingPlates ||
+                                        memory.job == JobStatus.processing ||
+                                        memory.job == JobStatus.queued
+                                    ? memory.original
+                                    : selectedPlate?.path ??
+                                          memory.cutout ??
+                                          memory.original,
+                              ),
                       ),
                     ),
                   ),
                   const SizedBox(height: 16),
-                  const Center(
-                    child: Text(
-                      'Plate cutouts will appear in your library.',
-                      style: TextStyle(fontSize: 11, color: Palette.muted),
-                    ),
-                  ),
+                  _plateControls(),
                   const SizedBox(height: 8),
                   Center(
                     child: Text(
@@ -676,9 +722,6 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   Widget _controls() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _label('Plate cutouts'),
-      _plateControls(),
-      const SizedBox(height: 20),
       _label('A few words'),
       TextField(
         controller: caption,
@@ -707,6 +750,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                     label: Text(
                       '${f.$2} ${f.$1}',
                       style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
                         color: memory.feeling == f.$1
                             ? Colors.white
                             : Palette.ink,
@@ -714,6 +759,12 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                     ),
                     selected: memory.feeling == f.$1,
                     onSelected: (_) => change(() => memory.feeling = f.$1),
+                    showCheckmark: false,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                    backgroundColor: Colors.white.withValues(alpha: .5),
                   ),
                 )
                 .toList(),
@@ -796,9 +847,19 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       ),
       const SizedBox(height: 8),
       const Text(
-        'Names are little labels. Invite an account to share access.',
+        'Keep names here, or share the whole meal with someone on morsl.',
         style: TextStyle(fontSize: 10, color: Palette.muted),
       ),
+      if (memory.ownsMeal) ...[
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: shareMeal,
+          icon: const Icon(Icons.person_add_alt_1_outlined, size: 18),
+          label: Text(
+            memory.draft ? 'Finish & share this meal' : 'Share this meal',
+          ),
+        ),
+      ],
       _label('When was this meal?'),
       OutlinedButton.icon(
         onPressed: !memory.ownsMeal
@@ -837,57 +898,34 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          app.usesCloudCutouts && !app.cloudCutoutsAllowed
-              ? 'Cloud cutouts are off. Enable them in Settings or use manual cleanup.'
-              : 'Cutouts run automatically. Use manual cleanup afterward if needed.',
-          style: const TextStyle(color: Palette.muted, fontSize: 12),
-        ),
-        const SizedBox(height: 8),
-        if (memory.plates.isNotEmpty) ...[
-          Text(
-            '${memory.plates.length} separate plates - select one to edit its edges',
-            style: const TextStyle(color: Palette.muted, fontSize: 12),
+        if (memory.plates.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              app.usesCloudCutouts && !app.cloudCutoutsAllowed
+                  ? 'Cloud cutouts are off. Enable them in Settings or use manual cleanup.'
+                  : memory.job == JobStatus.failed
+                  ? 'Your photo is safe. Retry the cutouts or clean up a plate yourself.'
+                  : 'Plate cutouts appear automatically when processing finishes.',
+              style: const TextStyle(color: Palette.muted, fontSize: 12),
+            ),
           ),
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              for (final plate in memory.plates)
-                ChoiceChip(
-                  label: Text('Plate ${memory.plates.indexOf(plate) + 1}'),
-                  selected: selectedPlate?.id == plate.id,
-                  onSelected: (_) => change(() {
-                    selectedPlateId = plate.id;
-                    photoChoiceEdited = true;
-                    memory.useOriginal = false;
-                  }),
-                ),
-            ],
-          ),
-        ],
         Wrap(
           spacing: 8,
           runSpacing: 8,
           children: [
-            FilledButton.icon(
-              onPressed:
-                  findingPlates ||
-                      memory.job == JobStatus.processing ||
-                      (memory.job == JobStatus.queued &&
-                          app.cloudCutoutsAllowed &&
-                          app.online) ||
-                      memory.original.isEmpty ||
-                      app.engine is! MultiSubjectSegmentationEngine
-                  ? null
-                  : () => addPlate(automatic: true),
-              icon: const Icon(Icons.auto_awesome, size: 18),
-              label: Text(
-                findingPlates ? 'Separating dishes...' : 'Separate dishes',
+            if (memory.plates.isEmpty &&
+                memory.job == JobStatus.failed &&
+                app.engine is MultiSubjectSegmentationEngine)
+              OutlinedButton.icon(
+                onPressed: findingPlates || memory.original.isEmpty
+                    ? null
+                    : () => addPlate(automatic: true),
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+                label: const Text('Retry cutouts'),
               ),
-            ),
             if (selectedPlate != null) ...[
-              TextButton.icon(
+              OutlinedButton.icon(
                 onPressed: findingPlates ? null : editPlate,
                 icon: const Icon(Icons.brush_outlined, size: 18),
                 label: const Text('Clean up edges'),
@@ -898,7 +936,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                     : () => plateChange(() {
                         final id = selectedPlate!.id;
                         memory.plates = memory.plates
-                            .where((p) => p.id != id)
+                            .where((plate) => plate.id != id)
                             .toList();
                         selectedPlateId = memory.plates.firstOrNull?.id;
                         if (memory.plates.isEmpty) {
@@ -906,7 +944,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                           memory.useOriginal = true;
                         }
                       }),
-                icon: const Icon(Icons.close, size: 18),
+                icon: const Icon(Icons.close_rounded, size: 18),
                 label: const Text('Remove plate'),
               ),
             ],

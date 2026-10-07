@@ -33,9 +33,11 @@ void main() {
   late TestPicker picker;
   late List<http.Request> requests;
   int responseStatus = 200;
+  Map<String, dynamic> profile = {};
 
   setUp(() {
     responseStatus = 200;
+    profile = {};
     requests = [];
     picker = TestPicker();
     client = SupabaseClient(
@@ -69,7 +71,7 @@ void main() {
                 'provider': 'google',
                 'providers': ['google'],
               },
-              'user_metadata': {},
+              'user_metadata': profile,
             },
           }),
           200,
@@ -106,6 +108,29 @@ void main() {
     await cloud.signInWithGoogle();
     expect(requests, isEmpty);
     expect(cloud.signedInWithGoogle, false);
+  });
+
+  test(
+    'Google profile photo follows the session and clears on sign-out',
+    () async {
+      profile = {
+        'avatar_url': 'https://lh3.googleusercontent.com/profile-photo',
+      };
+      expect(cloud.profilePhotoUrl, isNull);
+      await cloud.signInWithGoogle();
+      expect(cloud.profilePhotoUrl, profile['avatar_url']);
+      await cloud.signOut();
+      expect(cloud.profilePhotoUrl, isNull);
+    },
+  );
+
+  test('Google picture fallback ignores invalid profile photo URLs', () async {
+    profile = {
+      'avatar_url': 'not-a-url',
+      'picture': 'https://lh3.googleusercontent.com/profile-photo',
+    };
+    await cloud.signInWithGoogle();
+    expect(cloud.profilePhotoUrl, profile['picture']);
   });
 
   test('concurrent taps share one picker and token exchange', () async {

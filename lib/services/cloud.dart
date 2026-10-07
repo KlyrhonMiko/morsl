@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 
 import '../data/models.dart';
+import '../data/friends.dart';
 import 'google_account.dart';
 import 'media.dart';
 
@@ -32,6 +33,20 @@ class CloudService {
   bool get configured => client != null;
   String? get account => client?.auth.currentUser?.id;
   String? get email => client?.auth.currentUser?.email;
+  String? get profilePhotoUrl {
+    if (!signedInWithGoogle) return null;
+    final metadata = client?.auth.currentUser?.userMetadata;
+    for (final field in ['avatar_url', 'picture']) {
+      final value = metadata?[field];
+      if (value is! String) continue;
+      final url = Uri.tryParse(value.trim());
+      if (url != null && url.scheme == 'https' && url.host.isNotEmpty) {
+        return url.toString();
+      }
+    }
+    return null;
+  }
+
   bool get signedInWithGoogle {
     final user = client?.auth.currentUser;
     if (user == null || user.isAnonymous) return false;
@@ -223,6 +238,35 @@ class CloudService {
     );
   }
 
+  Future<List<FriendConnection>> friends() async {
+    requireGoogleAccount();
+    final response = await client!.rpc('my_friends');
+    return List<Map<String, dynamic>>.from(
+      response,
+    ).map(FriendConnection.fromJson).toList();
+  }
+
+  Future<void> requestFriend(String email) async {
+    requireGoogleAccount();
+    await client!.rpc(
+      'request_friend',
+      params: {'recipient_email': email.trim()},
+    );
+  }
+
+  Future<void> respondToFriend(String id, bool accept) async {
+    requireGoogleAccount();
+    await client!.rpc(
+      'respond_to_friend_request',
+      params: {'friendship': id, 'accept': accept},
+    );
+  }
+
+  Future<void> removeFriend(String id) async {
+    requireGoogleAccount();
+    await client!.rpc('remove_friend', params: {'friendship': id});
+  }
+
   Future<void> leave(String meal) async {
     requireGoogleAccount();
     await client!.rpc('leave_meal', params: {'meal': meal});
@@ -376,11 +420,15 @@ class CloudService {
         _ => 'image/jpeg',
       };
 
-  Future<List<Map<String, dynamic>>> venues(double lat, double lng) async {
+  Future<List<Map<String, dynamic>>> venues(
+    double lat,
+    double lng, {
+    String query = '',
+  }) async {
     requireGoogleAccount();
     final response = await client!.functions.invoke(
       'nearby-venues',
-      body: {'latitude': lat, 'longitude': lng},
+      body: {'latitude': lat, 'longitude': lng, 'query': query.trim()},
     );
     return List<Map<String, dynamic>>.from(response.data['places'] ?? []);
   }

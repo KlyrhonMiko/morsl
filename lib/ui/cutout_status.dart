@@ -89,12 +89,18 @@ class CutoutStatus extends StatelessWidget {
   }
 }
 
-/// Read-only source preview with processing feedback attached to the photo.
+/// Source preview with processing feedback attached to the photo.
 /// This component is never used by the photo export canvas.
 class CutoutPhoto extends StatefulWidget {
-  const CutoutPhoto({super.key, required this.job, required this.child});
+  const CutoutPhoto({
+    super.key,
+    required this.job,
+    required this.child,
+    this.interactive = false,
+  });
   final JobStatus job;
   final Widget child;
+  final bool interactive;
   @override
   State<CutoutPhoto> createState() => _CutoutPhotoState();
 }
@@ -149,7 +155,10 @@ class _CutoutPhotoState extends State<CutoutPhoto>
     final title = widget.job == JobStatus.processing
         ? 'Creating your cutout…'
         : 'Waiting for cutout';
-    final photo = IgnorePointer(child: RepaintBoundary(child: widget.child));
+    final photo = IgnorePointer(
+      ignoring: pending || !widget.interactive,
+      child: RepaintBoundary(child: widget.child),
+    );
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Stack(

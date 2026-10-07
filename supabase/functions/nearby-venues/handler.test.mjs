@@ -16,14 +16,14 @@ test("queries Geoapify with longitude first and normalizes provider results", as
     fetchPlaces: async (url, options) => {
       assert.equal(url.origin, "https://api.geoapify.com");
       assert.equal(url.pathname, "/v2/places");
-      assert.equal(url.searchParams.get("filter"), "circle:121.02,14.55,250");
+      assert.equal(url.searchParams.get("filter"), "circle:121.02,14.55,2000");
       assert.equal(url.searchParams.get("bias"), "proximity:121.02,14.55");
       assert.equal(url.searchParams.get("categories"), "catering.restaurant,catering.cafe");
       assert.equal(url.searchParams.get("limit"), "10");
       assert.equal(url.searchParams.get("apiKey"), "server-only-key");
       assert.ok(options.signal instanceof AbortSignal);
       return Response.json({ features: [
-        { properties: { place_id: "osm123", name: "Lunch", formatted: "Main Street", secret: "discard" } },
+        { properties: { place_id: "osm123", name: "Lunch", formatted: "Main Street", lat: 14.551, lon: 121.021, secret: "discard" } },
         { properties: {} },
       ] });
     },
@@ -32,7 +32,7 @@ test("queries Geoapify with longitude first and normalizes provider results", as
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await response.json(), {
-    places: [{ id: "geoapify:osm123", name: "Lunch", address: "Main Street" }],
+    places: [{ id: "geoapify:osm123", name: "Lunch", address: "Main Street", latitude: 14.551, longitude: 121.021 }],
   });
 });
 
@@ -84,12 +84,42 @@ test("empty results are successful and large result sets are capped", async () =
   for (const length of [0, 20]) {
     const handler = createVenueHandler({ authenticate: async () => google,
       apiKey: () => "key", fetchPlaces: async () => Response.json({
-        features: Array.from({ length }, (_, i) => ({ properties: { place_id: `${i}` } })),
+        features: Array.from({ length }, (_, i) => ({ properties: { place_id: `${i}`, lat: 14.55, lon: 121.02 } })),
       }) });
     const response = await handler(request());
     assert.equal(response.status, 200);
     assert.equal((await response.json()).places.length, Math.min(length, 10));
   }
+});
+
+test("restaurant names search nearby branches in a wider radius", async () => {
+  const handler = createVenueHandler({ authenticate: async () => google,
+    apiKey: () => "key", fetchPlaces: async (url) => {
+      assert.equal(url.searchParams.get("name"), "Italianis");
+      assert.equal(url.searchParams.get("filter"), "circle:121.02,14.55,15000");
+      assert.equal(url.searchParams.get("bias"), "proximity:121.02,14.55");
+      return Response.json({ features: [] });
+    } });
+  assert.equal((await handler(request({ latitude: 14.55, longitude: 121.02, query: " Italianis " }))).status, 200);
+});
+
+test("invalid restaurant names never reach the provider", async () => {
+  const handler = createVenueHandler({ authenticate: async () => google,
+    apiKey: () => "key", fetchPlaces: async () => assert.fail("Should not query") });
+  for (const query of [42, null, "a".repeat(121)]) {
+    assert.equal((await handler(request({ latitude: 14.55, longitude: 121.02, query }))).status, 400);
+  }
+});
+
+test("results without valid map coordinates are omitted", async () => {
+  const handler = createVenueHandler({ authenticate: async () => google,
+    apiKey: () => "key", fetchPlaces: async () => Response.json({ features: [
+      { properties: { place_id: "missing" } },
+      { properties: { place_id: "invalid", lat: 91, lon: 121 } },
+      { properties: { place_id: "valid", lat: 14.55, lon: 121.02 } },
+    ] }) });
+  const response = await handler(request());
+  assert.equal((await response.json()).places.length, 1);
 });
 
 test("rejects other HTTP methods before authentication", async () => {

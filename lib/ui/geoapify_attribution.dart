@@ -39,7 +39,7 @@ class GeoapifyAttribution extends StatelessWidget {
             style: TextButton.styleFrom(
               minimumSize: const Size(0, 32),
               padding: const EdgeInsets.symmetric(horizontal: 6),
-              textStyle: const TextStyle(fontSize: 10),
+              textStyle: const TextStyle(fontFamily: 'Quicksand', fontSize: 10),
             ),
             onPressed: () => _open(context, entry.value),
             child: Text(entry.key),
