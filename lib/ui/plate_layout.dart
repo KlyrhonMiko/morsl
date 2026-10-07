@@ -2,8 +2,137 @@ import 'dart:math' as math;
 
 import '../data/models.dart';
 
-/// A compact, layered collage with a diagonal path through the main dishes.
-void arrangePlates(List<Plate> plates) {
+/// Compose silhouettes as a compact spread, with balanced visual weight.
+void arrangePlates(List<Plate> plates, {String style = 'editorial'}) {
+  if (style == 'clean') {
+    _cleanSpread(plates);
+    return;
+  }
+  if (style != 'scrapbook') {
+    _editorialSpread(plates);
+    return;
+  }
+  if (plates.isEmpty || plates.length > 6) {
+    _scatteredArrangement(plates);
+    return;
+  }
+  // Follow an irregular path around a central anchor, without row baselines.
+  final centers = switch (plates.length) {
+    1 => [(.50, .43)],
+    2 => [(.37, .34), (.63, .56)],
+    3 => [(.32, .32), (.68, .36), (.49, .61)],
+    4 => [(.29, .30), (.67, .32), (.37, .56), (.73, .61)],
+    5 => [(.31, .28), (.70, .30), (.49, .46), (.24, .63), (.72, .65)],
+    _ => [
+      (.30, .30),
+      (.67, .27),
+      (.49, .45),
+      (.22, .59),
+      (.58, .66),
+      (.79, .53),
+    ],
+  };
+  for (var i = 0; i < plates.length; i++) {
+    final plate = plates[i];
+    final aspect = plate.aspect.isFinite && plate.aspect > 0
+        ? plate.aspect
+        : 1.0;
+    final angle = const [-.22, .19, -.11, .16, -.20, .14][i];
+    final cos = math.cos(angle).abs(), sin = math.sin(angle).abs();
+    final rw = cos + sin / aspect;
+    final rh = .96 * (sin + cos / aspect);
+    final area = plates.length < 4
+        ? .22 / math.sqrt(plates.length)
+        : const [.105, .085, .115, .085, .095, .085][i];
+    final scale = math.min(
+      math.sqrt(area / (rw * rh)),
+      math.min(
+        (plates.length < 4 ? .60 : .43) / rw,
+        (plates.length < 4 ? .42 : .35) / rh,
+      ),
+    );
+    final (cx, cy) = centers[i];
+    final x = cx.clamp(.06 + scale * rw / 2, .94 - scale * rw / 2);
+    final y = cy.clamp(.12 + scale * rh / 2, .80 - scale * rh / 2);
+    plate.scale = scale;
+    plate.x = x - scale / 2;
+    plate.y = y - scale * .96 / aspect / 2;
+    plate.rotation = angle;
+  }
+}
+
+void _cleanSpread(List<Plate> plates) {
+  if (plates.isEmpty) return;
+  final columns = plates.length <= 3
+      ? plates.length
+      : plates.length == 4
+      ? 2
+      : 3;
+  final rows = (plates.length / columns).ceil();
+  final cellWidth = .86 / columns;
+  final cellHeight = .60 / rows;
+  for (var i = 0; i < plates.length; i++) {
+    final p = plates[i];
+    final aspect = p.aspect.isFinite && p.aspect > 0 ? p.aspect : 1.0;
+    final inRow = math.min(columns, plates.length - i ~/ columns * columns);
+    final cx = .5 + (i % columns - (inRow - 1) / 2) * cellWidth;
+    final cy = .15 + (i ~/ columns + .5) * cellHeight;
+    final scale = math.min(cellWidth * .92, cellHeight * .90 * aspect / .96);
+    p.scale = scale;
+    p.x = cx - scale / 2;
+    p.y = cy - scale * .96 / aspect / 2;
+    p.rotation = 0;
+  }
+}
+
+void _editorialSpread(List<Plate> plates) {
+  if (plates.length < 4 || plates.length > 6) {
+    _scatteredArrangement(plates);
+    return;
+  }
+  // One leading dish and a second anchor, connected by smaller accents.
+  final poses = switch (plates.length) {
+    4 => [
+      (.32, .32, .53, .39),
+      (.74, .30, .33, .29),
+      (.24, .64, .32, .26),
+      (.62, .59, .51, .37),
+    ],
+    5 => [
+      (.32, .31, .52, .38),
+      (.74, .27, .32, .26),
+      (.76, .48, .30, .27),
+      (.22, .62, .30, .27),
+      (.53, .62, .44, .31),
+    ],
+    _ => [
+      (.31, .30, .50, .37),
+      (.73, .25, .31, .25),
+      (.72, .47, .38, .30),
+      (.19, .59, .28, .29),
+      (.48, .63, .42, .31),
+      (.80, .69, .26, .20),
+    ],
+  };
+  for (var i = 0; i < plates.length; i++) {
+    final p = plates[i];
+    final aspect = p.aspect.isFinite && p.aspect > 0 ? p.aspect : 1.0;
+    final angle = const [-.06, .08, -.10, .07, -.05, .10][i];
+    final cos = math.cos(angle).abs(), sin = math.sin(angle).abs();
+    final rw = cos + sin / aspect, rh = .96 * (sin + cos / aspect);
+    final (cx, cy, width, height) = poses[i];
+    final scale = math.min(width / rw, height / rh);
+    final x = cx.clamp(.06 + scale * rw / 2, .94 - scale * rw / 2);
+    final y = cy.clamp(.12 + scale * rh / 2, .80 - scale * rh / 2);
+    p.scale = scale;
+    p.x = x - scale / 2;
+    p.y = y - scale * .96 / aspect / 2;
+    p.rotation = angle;
+  }
+}
+
+// Recognize the former fixed-slot collage so existing automatic meals upgrade.
+void _scatteredArrangement(List<Plate> plates) {
   if (plates.isEmpty) return;
   final poses = switch (plates.length) {
     1 => [(.50, .42, .76, .60)],
@@ -123,8 +252,55 @@ void _previousArrangement(List<Plate> plates) {
 }
 
 /// Upgrade only the exact former automatic grid. Custom placements stay intact.
-List<Plate> displayPlates(List<Plate> plates) {
+List<Plate> displayPlates(
+  List<Plate> plates, {
+  bool edited = false,
+  String style = '',
+}) {
+  if (edited) return plates;
+  if (style.isNotEmpty) {
+    final arranged = plates.map((p) => p.copy()).toList();
+    arrangePlates(arranged, style: style);
+    return arranged;
+  }
+  if (plates.length > 1) {
+    final groups = <String?, List<Plate>>{};
+    for (final plate in plates) {
+      (groups[plate.photoId] ??= []).add(plate);
+    }
+    // Older meals saved the automatic arrangement of each source photo.
+    // Recognize those exact poses rather than guessing from overlap, which
+    // could overwrite an intentional composition.
+    if (groups.length > 1 && groups.values.every(_isAutomaticGroup)) {
+      final arranged = plates.map((p) => p.copy()).toList();
+      arrangePlates(arranged);
+      return arranged;
+    }
+  }
+  return _refreshPreviousArrangement(plates);
+}
+
+bool _samePose(Plate p, Plate other) =>
+    (p.x - other.x).abs() < .00001 &&
+    (p.y - other.y).abs() < .00001 &&
+    (p.scale - other.scale).abs() < .00001 &&
+    (p.rotation - other.rotation).abs() < .00001;
+
+bool _isAutomaticGroup(List<Plate> plates) {
+  final expected = plates.map((p) => p.copy()).toList();
+  arrangePlates(expected);
+  return plates.indexed.every((e) => _samePose(e.$2, expected[e.$1])) ||
+      !identical(_refreshPreviousArrangement(plates), plates);
+}
+
+List<Plate> _refreshPreviousArrangement(List<Plate> plates) {
   if (plates.isEmpty) return plates;
+  final scattered = plates.map((p) => p.copy()).toList();
+  _scatteredArrangement(scattered);
+  if (plates.indexed.every((e) => _samePose(e.$2, scattered[e.$1]))) {
+    arrangePlates(scattered);
+    return scattered;
+  }
   final previous = plates.map((p) => p.copy()).toList();
   _previousArrangement(previous);
   if (plates.indexed.every((entry) {

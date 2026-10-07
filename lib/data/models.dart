@@ -97,6 +97,7 @@ class Memory {
     this.cutout,
     this.plates = const [],
     this.platesEdited = false,
+    this.plateLayout = '',
     this.creator,
     this.assetId,
     this.venue = '',
@@ -143,6 +144,7 @@ class Memory {
   String? thumbnail, cutout;
   List<Plate> plates;
   bool platesEdited;
+  String plateLayout;
   String venue, caption, feeling, background, layout;
   String? placeId;
   List<String> companions;
@@ -188,6 +190,7 @@ class Memory {
     'cutout': cutout,
     'plates': plates.map((plate) => plate.toJson()).toList(),
     'platesEdited': platesEdited,
+    'plateLayout': plateLayout,
     'venue': venue,
     'placeId': placeId,
     'caption': caption,
@@ -242,6 +245,7 @@ class Memory {
         .map((p) => Plate.fromJson(Map<String, dynamic>.from(p)))
         .toList(),
     platesEdited: j['platesEdited'] ?? false,
+    plateLayout: j['plateLayout'] ?? '',
     venue: j['venue'] ?? '',
     placeId: j['placeId'],
     caption: j['caption'] ?? '',

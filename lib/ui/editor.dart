@@ -19,6 +19,8 @@ import 'cutout_status.dart';
 import 'plate_preview_pager.dart';
 import 'meal_photo_thumbnail.dart';
 import 'venue_field.dart';
+import 'memory_card.dart';
+import 'meal_layout_selector.dart';
 
 class PlatingEditor extends ConsumerStatefulWidget {
   const PlatingEditor({super.key, required this.memory});
@@ -28,6 +30,7 @@ class PlatingEditor extends ConsumerStatefulWidget {
 }
 
 class _PlatingEditorState extends ConsumerState<PlatingEditor> {
+  bool showMealLayout = true;
   late Memory memory;
   late MorslController app;
   late TextEditingController caption, venue, companions;
@@ -97,6 +100,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
         if (!platesDirty) {
           memory.plates = current.plates.map((p) => p.copy()).toList();
           memory.platesEdited = current.platesEdited;
+          memory.plateLayout = current.plateLayout;
         }
         memory.job = current.job;
         memory.error = current.error;
@@ -144,6 +148,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             current.archived = snapshot.archived;
             current.background = snapshot.background;
             current.layout = snapshot.layout;
+            current.plateLayout = snapshot.plateLayout;
             current.x = snapshot.x;
             current.y = snapshot.y;
             current.scale = snapshot.scale;
@@ -151,7 +156,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             current.useOriginal = false;
             if (didPlateEdit && current.original.isNotEmpty) {
               current.plates = snapshot.plates;
-              current.platesEdited = true;
+              current.platesEdited = snapshot.platesEdited;
             }
             if (current.ownsMeal) {
               current.venue = snapshot.venue;
@@ -257,12 +262,16 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           plate.photoId = photoId;
         }
         final previousOriginal = memory.useOriginal;
+        final arrangeCombined = !memory.platesEdited;
         final generatedIds = added.map((p) => p.id).join(',');
         plateChange(() {
           memory.plates = [
             ...memory.plates.where((p) => !automatic || p.photoId != photoId),
             ...added!,
           ];
+          if (arrangeCombined) {
+            arrangePlates(memory.plates, style: memory.plateLayout);
+          }
           selectedPlateId = added.first.id;
           photoChoiceEdited = true;
           memory.useOriginal = false;
@@ -649,6 +658,26 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                     color: Palette.forest,
                   ),
                   const SizedBox(height: 22),
+                  if (memory.plates.isNotEmpty) ...[
+                    SegmentedButton<bool>(
+                      segments: const [
+                        ButtonSegment(
+                          value: true,
+                          label: Text('Meal layout'),
+                          icon: Icon(Icons.auto_awesome_mosaic_outlined),
+                        ),
+                        ButtonSegment(
+                          value: false,
+                          label: Text('Plate cutouts'),
+                          icon: Icon(Icons.restaurant_outlined),
+                        ),
+                      ],
+                      selected: {showMealLayout},
+                      onSelectionChanged: (value) =>
+                          setState(() => showMealLayout = value.single),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   Center(
                     child: ConstrainedBox(
                       constraints: BoxConstraints(
@@ -669,12 +698,17 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                                 !findingPlates &&
                                 memory.job != JobStatus.processing &&
                                 memory.job != JobStatus.queued
-                            ? PlatePreviewPager(
-                                plates: memory.plates,
-                                selectedId: selectedPlate?.id,
-                                onSelected: (id) =>
-                                    setState(() => selectedPlateId = id),
-                              )
+                            ? showMealLayout
+                                  ? AspectRatio(
+                                      aspectRatio: .96,
+                                      child: MemoryCanvas(memory: memory),
+                                    )
+                                  : PlatePreviewPager(
+                                      plates: memory.plates,
+                                      selectedId: selectedPlate?.id,
+                                      onSelected: (id) =>
+                                          setState(() => selectedPlateId = id),
+                                    )
                             : PlateImage(
                                 path:
                                     findingPlates ||
@@ -689,7 +723,22 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  _plateControls(),
+                  if (showMealLayout && memory.plates.isNotEmpty)
+                    MealLayoutSelector(
+                      memory: memory,
+                      enabled:
+                          !findingPlates &&
+                          memory.job != JobStatus.processing &&
+                          memory.job != JobStatus.queued,
+                      onSelected: (style) => change(() {
+                        platesDirty = true;
+                        memory.platesEdited = false;
+                        memory.plateLayout = style;
+                        arrangePlates(memory.plates, style: style);
+                      }),
+                    )
+                  else
+                    _plateControls(),
                   const SizedBox(height: 16),
                   _photoControls(),
                 ],

@@ -8,43 +8,93 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:morsl/data/models.dart';
 import 'package:morsl/ui/memory_card.dart';
+import 'package:morsl/ui/meal_layout_selector.dart';
 import 'package:morsl/ui/plate_layout.dart';
 import 'package:morsl/ui/theme.dart';
 
 void main() {
-  test('collage keeps rotated dishes between date and caption', () {
-    for (var count = 1; count <= 15; count++) {
-      final plates = List.generate(
-        count,
-        (i) => Plate(id: '$i', mask: '', aspect: const [.7, 1.0, 2.0][i % 3]),
+  test('six independently arranged photos become one meal collage', () {
+    final plates = List.generate(6, (i) {
+      final group = [
+        Plate(
+          id: '$i',
+          mask: '',
+          photoId: i == 0 ? null : 'photo-$i',
+          aspect: const [.7, 1.0, 2.0][i % 3],
+        ),
+      ];
+      arrangePlates(group);
+      return group.single;
+    });
+    final saved = plates.map((p) => p.toJson()).toList();
+    final expected = plates.map((p) => p.copy()).toList();
+    arrangePlates(expected);
+    expect(
+      displayPlates(plates).map((p) => p.toJson()).toList(),
+      expected.map((p) => p.toJson()).toList(),
+    );
+    expect(plates.map((p) => p.toJson()).toList(), saved);
+    expect(identical(displayPlates(plates, edited: true), plates), isTrue);
+    plates.first.x += .03;
+    expect(identical(displayPlates(plates), plates), isTrue);
+  });
+
+  test('multiple dishes per source photo are composed together', () {
+    final plates = <Plate>[];
+    for (var photo = 0; photo < 3; photo++) {
+      final group = List.generate(
+        2,
+        (i) => Plate(id: '$photo-$i', mask: '', photoId: 'photo-$photo'),
       );
-      arrangePlates(plates);
-      final bounds = plates.map((p) {
-        final cos = math.cos(p.rotation).abs();
-        final sin = math.sin(p.rotation).abs();
-        return Rect.fromCenter(
-          center: Offset(p.x + p.scale / 2, p.y + p.scale * .96 / p.aspect / 2),
-          width: p.scale * (cos + sin / p.aspect),
-          height: p.scale * .96 * (sin + cos / p.aspect),
+      arrangePlates(group);
+      plates.addAll(group);
+    }
+    final expected = plates.map((p) => p.copy()).toList();
+    arrangePlates(expected);
+    expect(
+      displayPlates(plates).map((p) => p.toJson()).toList(),
+      expected.map((p) => p.toJson()).toList(),
+    );
+  });
+
+  test('collage keeps rotated dishes between date and caption', () {
+    for (final style in ['editorial', 'scrapbook', 'clean']) {
+      for (var count = 1; count <= 15; count++) {
+        final plates = List.generate(
+          count,
+          (i) => Plate(id: '$i', mask: '', aspect: const [.7, 1.0, 2.0][i % 3]),
         );
-      }).toList();
-      for (var i = 0; i < bounds.length; i++) {
-        expect(bounds[i].left, greaterThanOrEqualTo(.05999));
-        expect(bounds[i].right, lessThanOrEqualTo(.94001));
-        expect(bounds[i].top, greaterThanOrEqualTo(.11999));
-        expect(bounds[i].bottom, lessThanOrEqualTo(.80001));
-        for (var j = i + 1; j < bounds.length; j++) {
-          final overlap = bounds[i].intersect(bounds[j]);
-          if (!overlap.isEmpty) {
-            final smaller = math.min(
-              bounds[i].width * bounds[i].height,
-              bounds[j].width * bounds[j].height,
-            );
-            expect(
-              overlap.width * overlap.height / smaller,
-              lessThan(.5),
-              reason: '$count dishes: $i and $j remain recognizable',
-            );
+        arrangePlates(plates, style: style);
+        final bounds = plates.map((p) {
+          final cos = math.cos(p.rotation).abs();
+          final sin = math.sin(p.rotation).abs();
+          return Rect.fromCenter(
+            center: Offset(
+              p.x + p.scale / 2,
+              p.y + p.scale * .96 / p.aspect / 2,
+            ),
+            width: p.scale * (cos + sin / p.aspect),
+            height: p.scale * .96 * (sin + cos / p.aspect),
+          );
+        }).toList();
+        for (var i = 0; i < bounds.length; i++) {
+          expect(bounds[i].left, greaterThanOrEqualTo(.05999));
+          expect(bounds[i].right, lessThanOrEqualTo(.94001));
+          expect(bounds[i].top, greaterThanOrEqualTo(.11999));
+          expect(bounds[i].bottom, lessThanOrEqualTo(.80001));
+          for (var j = i + 1; j < bounds.length; j++) {
+            final overlap = bounds[i].intersect(bounds[j]);
+            if (!overlap.isEmpty) {
+              final smaller = math.min(
+                bounds[i].width * bounds[i].height,
+                bounds[j].width * bounds[j].height,
+              );
+              expect(
+                overlap.width * overlap.height / smaller,
+                lessThan(.5),
+                reason: '$style: $count dishes: $i and $j remain recognizable',
+              );
+            }
           }
         }
       }
@@ -69,14 +119,16 @@ void main() {
     expect(identical(displayPlates(plates), plates), true);
   });
 
-  for (final (width, count) in [
-    (375.0, 6),
-    (720.0, 6),
-    (375.0, 2),
-    (375.0, 3),
+  for (final (width, count, style) in [
+    (375.0, 6, 'editorial'),
+    (720.0, 6, 'editorial'),
+    (375.0, 6, 'scrapbook'),
+    (375.0, 6, 'clean'),
+    (375.0, 2, 'editorial'),
+    (375.0, 3, 'editorial'),
   ]) {
-    testWidgets('$count plate collage at $width', (tester) async {
-      tester.view.physicalSize = Size(width, width / .96);
+    testWidgets('$style $count plate collage at $width', (tester) async {
+      tester.view.physicalSize = Size(width, width / .96 + width / 3 + 190);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -109,10 +161,26 @@ void main() {
               Future.value(ImageInfo(image: frame.image)),
             ),
           );
+          final thumbnail = ResizeImage.resizeIfNeeded(200, null, provider);
+          PaintingBinding.instance.imageCache.putIfAbsent(
+            await thumbnail.obtainKey(const ImageConfiguration()),
+            () => OneFrameImageStreamCompleter(
+              Future.value(ImageInfo(image: frame.image.clone())),
+            ),
+          );
           codec.dispose();
         }
       });
-      arrangePlates(plates);
+      arrangePlates(plates, style: style);
+      final memory = Memory(
+        id: 'preview',
+        scope: 'guest',
+        createdAt: DateTime(2026, 5, 21),
+        original: '',
+        plates: plates,
+        useOriginal: false,
+        plateLayout: style,
+      );
       final key = GlobalKey();
       await tester.pumpWidget(
         MaterialApp(
@@ -121,14 +189,22 @@ void main() {
           home: Scaffold(
             body: RepaintBoundary(
               key: key,
-              child: MemoryCanvas(
-                memory: Memory(
-                  id: 'preview',
-                  scope: 'guest',
-                  createdAt: DateTime(2026, 5, 21),
-                  original: '',
-                  plates: plates,
-                  useOriginal: false,
+              child: ColoredBox(
+                color: Palette.paper,
+                child: Column(
+                  children: [
+                    SizedBox(
+                      height: width / .96,
+                      child: MemoryCanvas(memory: memory),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: MealLayoutSelector(
+                        memory: memory,
+                        onSelected: (_) {},
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -145,7 +221,7 @@ void main() {
         final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
         await Directory('output/previews').create(recursive: true);
         await File(
-          'output/previews/collage-$count-${width.toInt()}.png',
+          'output/previews/collage-$style-$count-${width.toInt()}.png',
         ).writeAsBytes(bytes!.buffer.asUint8List());
         image.dispose();
       });

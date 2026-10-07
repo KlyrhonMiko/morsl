@@ -51,7 +51,11 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
       final unit = w / 360;
       final compact = memory.layout == 'postcard';
       final cutout = memory.displaysCutout;
-      final plates = displayPlates(memory.plates);
+      final plates = displayPlates(
+        memory.plates,
+        edited: memory.platesEdited,
+        style: memory.plateLayout,
+      );
       final centered = memory.layout == 'centered';
       final imageHeight = h * (cutout ? .62 : .54);
       final photo = memory.displayPath;

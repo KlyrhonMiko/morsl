@@ -645,6 +645,11 @@ class MorslController extends ChangeNotifier {
           current.originalProcessed =
               current.originalProcessed || error == null;
           current.plates = [...current.plates, ...extraPlates];
+          if (!current.platesEdited) {
+            // Extraction arranges each photo independently; compose the meal
+            // only after all successful photo results have been combined.
+            arrangePlates(current.plates, style: current.plateLayout);
+          }
           for (final photo in current.photos) {
             final result = photoResults[photo.id];
             if (result != null) {

@@ -211,8 +211,9 @@ class _VenueFieldState extends State<VenueField> {
   }
 
   KeyEventResult handleKey(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent || !portal.isShowing)
+    if (event is! KeyDownEvent || !portal.isShowing) {
       return KeyEventResult.ignored;
+    }
     if (event.logicalKey == LogicalKeyboardKey.escape) {
       portal.hide();
       return KeyEventResult.handled;
