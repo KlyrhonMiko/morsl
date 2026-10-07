@@ -70,8 +70,10 @@ class MorslController extends ChangeNotifier {
   StreamSubscription? _auth;
   StreamSubscription? _connectivity;
   String? _authScope;
+  int _reloadVersion = 0;
 
   Future<void> initialize({bool seedExamples = true}) async {
+    final startupScope = scope;
     try {
       online = !(await Connectivity().checkConnectivity()).contains(
         ConnectivityResult.none,
@@ -117,7 +119,9 @@ class MorslController extends ChangeNotifier {
       notice =
           'Reminders are unavailable on this device. Your drafts are always here.';
     }
-    _authScope = scope;
+    // Account restoration may finish during the optional startup work above.
+    // Compare against the initial scope so the first auth event cannot hide it.
+    _authScope = startupScope;
     _auth = cloud.client?.auth.onAuthStateChange.listen(
       (_) {
         authError = null;
@@ -133,6 +137,13 @@ class MorslController extends ChangeNotifier {
         notifyListeners();
       },
     );
+    if (_authScope != scope) {
+      _authScope = scope;
+      await _accountChanged();
+    } else {
+      // Publish the latest local meals before the Library is first displayed.
+      await reload();
+    }
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (active) {
         unawaited(sync());
@@ -170,10 +181,11 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> reload() async {
+    final version = ++_reloadVersion;
     final account = scope;
     final items = await repository.list(account);
     final pending = await repository.pending(account);
-    if (account != scope) {
+    if (account != scope || version != _reloadVersion) {
       return;
     }
     memories = items;

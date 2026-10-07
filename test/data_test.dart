@@ -19,10 +19,15 @@ class FakeEngine implements SegmentationEngine {
   bool fails = true;
   Completer<void>? wait;
   final started = Completer<void>();
+  Future<void> Function()? onAvailable;
   @override
   String get runtime => 'test device / test model';
   @override
-  Future<bool> available() async => true;
+  Future<bool> available() async {
+    await onAvailable?.call();
+    return true;
+  }
+
   @override
   Future<String> process(String original, String output) async {
     if (!started.isCompleted) started.complete();
@@ -119,10 +124,29 @@ class ReferenceCloud extends FakeCloud {
 // They now exercise a signed-in controller rather than authorizing real guests.
 class TestGoogleCloud extends CloudService {
   TestGoogleCloud(super.client, super.media);
+  String? current = 'guest';
   @override
-  String? get account => 'guest';
+  String? get account => current;
   @override
-  bool get signedInWithGoogle => true;
+  bool get signedInWithGoogle => current != null;
+}
+
+class DelayedMemoryRepository extends MemoryRepository {
+  DelayedMemoryRepository(super.db);
+  Completer<void>? delayNextList;
+  final delayedListStarted = Completer<void>();
+
+  @override
+  Future<List<Memory>> list(String scope) async {
+    final delay = delayNextList;
+    delayNextList = null;
+    final items = await super.list(scope);
+    if (delay != null) {
+      delayedListStarted.complete();
+      await delay.future;
+    }
+    return items;
+  }
 }
 
 void main() {
@@ -191,6 +215,60 @@ void main() {
         cloud: cloud,
         reminders: DraftReminders(),
       );
+
+  test(
+    'startup loads saved meals when the account is restored during setup',
+    () async {
+      final saved = meal('account-a')
+        ..draft = false
+        ..job = JobStatus.ready
+        ..cutout = 'saved-cutout.png';
+      await repo.save(saved, enqueue: false);
+      final draft = Memory.fromJson({
+        ...saved.toJson(),
+        'id': 'draft',
+        'draft': true,
+      });
+      await repo.save(draft, enqueue: false);
+      await repo.setPreference('cloudCutouts:v1:account-a', 'false');
+      final cloud = TestGoogleCloud(null, media)..current = null;
+      final engine = FakeRemoteEngine()
+        ..onAvailable = () async => cloud.current = 'account-a';
+      final app = controller(engine, cloud);
+      await app.initialize(seedExamples: false);
+      expect(app.scope, 'account-a');
+      expect(app.memories, hasLength(2));
+      expect(LibraryPlate.fromMemories(app.memories), hasLength(1));
+      expect(app.memories.where((m) => m.draft), hasLength(1));
+      expect(app.cloudCutoutsAllowed, false);
+      app.dispose();
+    },
+  );
+
+  test('a delayed reload cannot replace newly loaded saved meals', () async {
+    final repository = DelayedMemoryRepository(db);
+    final app = MorslController(
+      repository: repository,
+      media: media,
+      engine: FakeEngine(),
+      cloud: TestGoogleCloud(null, media),
+      reminders: DraftReminders(),
+    );
+    final delay = Completer<void>();
+    repository.delayNextList = delay;
+    final staleReload = app.reload();
+    await repository.delayedListStarted.future;
+    final saved = meal('guest')
+      ..draft = false
+      ..cutout = 'saved-cutout.png';
+    await repository.save(saved, enqueue: false);
+    await app.reload();
+    expect(LibraryPlate.fromMemories(app.memories), hasLength(1));
+    delay.complete();
+    await staleReload;
+    expect(LibraryPlate.fromMemories(app.memories), hasLength(1));
+    app.dispose();
+  });
 
   test('cloud cutouts default on and preserve an account opt-out', () async {
     final engine = FakeRemoteEngine();
