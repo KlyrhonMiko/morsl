@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'media_image.dart';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -408,8 +408,8 @@ class PlateImage extends StatelessWidget {
   const PlateImage({super.key, required this.path});
   final String path;
   @override
-  Widget build(BuildContext context) => Image.file(
-    File(path),
+  Widget build(BuildContext context) => Image(
+    image: mediaImage(path),
     fit: BoxFit.contain,
     errorBuilder: (_, _, _) => const Center(
       child: Icon(Icons.broken_image_outlined, color: Palette.muted),

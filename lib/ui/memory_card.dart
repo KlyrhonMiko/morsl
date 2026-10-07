@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'media_image.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -60,10 +60,16 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                 style: TextStyle(fontSize: 11, color: Palette.muted),
               ),
             )
-          : Image.file(
-              File(preview && !cutout ? memory.thumbnail ?? photo : photo),
+          : Image(
+              image: ResizeImage.resizeIfNeeded(
+                preview ? 700 : null,
+                null,
+                mediaImage(
+                  preview && !cutout ? memory.thumbnail ?? photo : photo,
+                ),
+              ),
               fit: BoxFit.contain,
-              cacheWidth: preview ? 700 : null,
+
               errorBuilder: (c, e, s) => const Center(
                 child: Icon(
                   Icons.restaurant_outlined,
@@ -159,10 +165,14 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                                         borderRadius: BorderRadius.circular(8),
                                       )
                                     : null,
-                                child: Image.file(
-                                  File(plate.path),
+                                child: Image(
+                                  image: ResizeImage.resizeIfNeeded(
+                                    preview ? 700 : null,
+                                    null,
+                                    mediaImage(plate.path),
+                                  ),
                                   fit: BoxFit.contain,
-                                  cacheWidth: preview ? 700 : null,
+
                                   errorBuilder: (c, e, s) => const Center(
                                     child: Icon(Icons.restaurant_outlined),
                                   ),

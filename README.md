@@ -53,9 +53,12 @@ Rendered UI previews are in `output/previews/`.
 
 ## Connect backup, invitations, and maps
 
-1. Create a Supabase project. Apply
+1. Create a fresh Supabase project. Apply
    `supabase/migrations/202610050001_beta.sql` using the Supabase CLI or SQL editor.
-   This creates the private `meal-images` bucket, RLS policies, and RPCs.
+   This creates meal metadata, RLS policies, and RPCs. Images now use private
+   Cloudflare R2; follow [image storage setup](IMAGE_STORAGE.md) to create the bucket,
+   set server secrets, and deploy `image-storage`. This fresh baseline does not
+   create a Supabase Storage image bucket or provide an image-storage fallback.
 2. Enable the Google provider in Supabase Auth using a Google OAuth web client.
    Use its matching Client Secret in Supabase, and set the public Web Client ID
    as `GOOGLE_WEB_CLIENT_ID` in `config.local.json`.
@@ -94,7 +97,9 @@ illustration and local locations; cloud actions explain their configuration stat
 
 - Riverpod app dependency/state ownership; Drift/SQLite transactions and separate
   meal, asset, personal-memory, job, sync, evaluation, preference, and event data.
-- Original photos in application documents, never large SQLite image blobs.
+- Unsynced original photos in application documents, never large SQLite image blobs.
+  Backed-up originals and finished cutouts use private R2 and a 100 MiB temporary
+  device cache; restore downloads metadata and fetches images on demand.
   Thumbnails are generated away from the UI thread. Imports use available EXIF
   capture dates/GPS and offer correction. Lost Android picker results are recovered.
 - Separate plate masks, normalized source regions, independent placement, and
@@ -210,7 +215,7 @@ using local test tiles. Venue endpoint tests cover Google account requirements,
 coordinate validation, Geoapify's longitude-first parameters, response mapping,
 and failed or timed-out provider requests.
 
-The backend test uses PGlite (PostgreSQL in WASM) with mocked Supabase Auth/Storage
+The backend test uses PGlite (PostgreSQL in WASM) with mocked Supabase Auth
 schemas and three synthetic identities. It tests actual SQL/RLS, not Dart mocks:
 
 ```powershell
@@ -219,7 +224,8 @@ node test/backend_security.mjs
 ```
 
 This validates the migration and authorization/revision logic locally; it does
-not replace real Supabase Auth, Storage HTTP access, or two-account device tests.
+not replace real Supabase Auth, R2 HTTP access, or two-account device tests.
+R2 authorization and URL signing checks are in `supabase/functions/image-storage/`.
 Physical-device cutout quality and live two-account service verification remain release gates.
 
 ## Scope and operational notes

@@ -6,11 +6,112 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'image_cache.dart';
 
 export 'cloud_segmentation.dart';
 export 'segmentation.dart';
 
 class MediaStore {
+  MediaStore({ImageDiskCache? cache}) : cache = cache ?? ImageDiskCache();
+  final ImageDiskCache cache;
+  static MediaStore? imageStore;
+  String Function()? accountIdentity;
+  Future<Uint8List> Function(String key)? download;
+  final Map<String, int> _localPins = {};
+  final Map<String, int> _work = {};
+  final Set<String> _revoked = {};
+  static bool isRemote(String path) => path.startsWith('morsl-cloud:');
+  static String remote(String key) => 'morsl-cloud:$key';
+  static String key(String ref) => ref.substring('morsl-cloud:'.length);
+  String _identity(String ref) => '${accountIdentity?.call() ?? 'guest'}:$ref';
+  void authorize(String ref) => _revoked.remove(_identity(ref));
+  Future<void> revoke(String ref) async {
+    if (!isRemote(ref)) return;
+    final identity = _identity(ref);
+    _revoked.add(identity);
+    await cache.remove(identity);
+  }
+
+  Future<Uint8List> _load(String ref) async {
+    if (download == null) throw StateError('Connect to load this image.');
+    return download!(key(ref));
+  }
+
+  Future<MediaLease> acquire(String ref) async {
+    if (!isRemote(ref)) {
+      _localPins[ref] = (_localPins[ref] ?? 0) + 1;
+      return MediaLease(File(ref), () async {
+        final count = (_localPins[ref] ?? 1) - 1;
+        if (count <= 0) {
+          _localPins.remove(ref);
+        } else {
+          _localPins[ref] = count;
+        }
+      });
+    }
+    final identity = _identity(ref);
+    if (_revoked.contains(identity)) {
+      throw StateError('This image is no longer available.');
+    }
+    final file = await cache.acquire(identity, () => _load(ref));
+    if (identity != _identity(ref) || _revoked.contains(identity)) {
+      cache.release(identity);
+      throw StateError('Account changed.');
+    }
+    return MediaLease(file, () async {
+      cache.release(identity);
+      await cache.trim();
+    });
+  }
+
+  Future<void> beginWork(String scope, String id) async {
+    final dir = (await directory(scope, id)).path;
+    _work[dir] = (_work[dir] ?? 0) + 1;
+  }
+
+  Future<void> endWork(String scope, String id) async {
+    final dir = (await directory(scope, id)).path;
+    final count = (_work[dir] ?? 1) - 1;
+    if (count <= 0) {
+      _work.remove(dir);
+    } else {
+      _work[dir] = count;
+    }
+  }
+
+  Future<Uint8List> read(String ref) async {
+    final identity = _identity(ref);
+    final lease = await acquire(ref);
+    try {
+      final bytes = await lease.file.readAsBytes();
+      if (isRemote(ref) &&
+          (identity != _identity(ref) || _revoked.contains(identity))) {
+        throw StateError('This image is no longer available.');
+      }
+      return bytes;
+    } finally {
+      await lease.close();
+    }
+  }
+
+  /// Call only after committed cloud restore, with no pending edits/jobs.
+  Future<void> removeBackedUpFiles(String scope, String id) async {
+    final dir = await directory(scope, id);
+    if (_work.containsKey(dir.path) ||
+        _localPins.keys.any((path) => p.isWithin(dir.path, path))) {
+      return;
+    }
+    await for (final entity in dir.list(followLinks: false)) {
+      if (entity is File && !_localPins.containsKey(entity.path)) {
+        try {
+          await entity.delete();
+        } on FileSystemException {
+          /* Open image handles are retried on the next sync. */
+        }
+      }
+    }
+  }
+
   Future<Directory> directory(String scope, String id) async {
     final root = await getApplicationDocumentsDirectory();
     return Directory(
@@ -47,6 +148,18 @@ class MediaStore {
   Future<String?> thumbnail(String original) => compute(_thumbnail, original);
   Future<Map<String, dynamic>> metadata(String original) =>
       compute(_metadata, original);
+}
+
+class MediaLease {
+  MediaLease(this.file, this._release);
+  final File file;
+  final Future<void> Function() _release;
+  bool _closed = false;
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    await _release();
+  }
 }
 
 Map<String, dynamic> _metadata(String original) {

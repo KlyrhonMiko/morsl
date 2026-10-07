@@ -1,3 +1,5 @@
+import 'media_image.dart';
+import '../services/media.dart';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -136,7 +138,7 @@ class _CompositionEditorState extends State<CompositionEditor> {
         Object? loadError;
         if (!mounted || !authorized) return;
         await precacheImage(
-          FileImage(File(source.path)),
+          mediaImage(source.path),
           context,
           onError: (error, stack) => loadError = error,
         );
@@ -246,7 +248,8 @@ class _CompositionEditorState extends State<CompositionEditor> {
         .where(
           (plate) =>
               entries[plate.key] == null ||
-              !File(entries[plate.key]!.path).existsSync(),
+              (!MediaStore.isRemote(entries[plate.key]!.path) &&
+                  !File(entries[plate.key]!.path).existsSync()),
         )
         .toList();
     final plate = active;

@@ -37,6 +37,7 @@ Future<Plate> renderPlate(
   Plate plate,
 ) async {
   final result = plate.copy();
+  result.cloudPath = null;
   final sourceDigest = await sha256.bind(File(original).openRead()).first;
   // Content-addressed derivatives prevent stale Flutter image-cache entries.
   final digest = sha256.convert(
@@ -123,7 +124,7 @@ Uint8List renderPlateBytes(Map<String, dynamic> args) {
       alpha.getPixel(pixel.x, pixel.y).a,
     );
   }
-  return img.encodePng(output);
+  return img.encodePng(output, level: 9);
 }
 
 String solidPlateMask() {

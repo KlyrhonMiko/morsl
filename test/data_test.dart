@@ -88,6 +88,26 @@ class FakeCloud extends CloudService {
   Future<Set<String>> authorizedIds() async => remote.keys.toSet();
 }
 
+class ReferenceCloud extends FakeCloud {
+  ReferenceCloud(super.client, super.media);
+  Future<void> Function()? duringPull;
+  @override
+  Future<List<Memory>> pull(String account) async {
+    await duringPull?.call();
+    return (await super.pull(account)).map((memory) {
+      memory.original = MediaStore.remote('${memory.id}/original.jpg');
+      memory.plates = memory.plates
+          .map(
+            (plate) =>
+                plate.copy()
+                  ..path = MediaStore.remote('${memory.id}/plate.png'),
+          )
+          .toList();
+      return memory;
+    }).toList();
+  }
+}
+
 // Existing persistence fixtures use "guest" as their isolated test scope.
 // They now exercise a signed-in controller rather than authorizing real guests.
 class TestGoogleCloud extends CloudService {
@@ -436,6 +456,62 @@ void main() {
       final pending = (await repo.pending('account-a')).single;
       expect(pending.id, isNot(op.id));
       expect(pending.payload['caption'], 'A newer thought');
+    },
+  );
+  test(
+    'successful cloud restore commits references before removing backed-up document files',
+    () async {
+      final dir = await media.directory('account-a', 'meal-1');
+      final source = await File(
+        '${dir.path}/original.jpg',
+      ).writeAsBytes([1, 2, 3]);
+      final cutout = await File('${dir.path}/plate.png').writeAsBytes([4, 5]);
+      final memory = meal('account-a')
+        ..original = source.path
+        ..job = JobStatus.ready
+        ..plates = [Plate(id: 'plate', mask: 'mask', path: cutout.path)];
+      await repo.save(memory);
+      final cloud = ReferenceCloud(null, media)..failPush = false;
+      final app = controller(FakeEngine(), cloud);
+      await app.sync(manual: true);
+      expect(app.syncError, null);
+      final restored = (await repo.list('account-a')).single;
+      expect(MediaStore.isRemote(restored.original), true);
+      expect(MediaStore.isRemote(restored.plates.single.path), true);
+      expect(await repo.pending('account-a'), isEmpty);
+      expect(await source.exists(), false);
+      expect(await cutout.exists(), false);
+      app.dispose();
+    },
+  );
+  test(
+    'an edit queued during restore prevents replacement and document cleanup',
+    () async {
+      final dir = await media.directory('account-a', 'meal-1');
+      final source = await File(
+        '${dir.path}/original.jpg',
+      ).writeAsBytes([1, 2, 3]);
+      final memory = meal('account-a')
+        ..original = source.path
+        ..job = JobStatus.ready;
+      await repo.save(memory);
+      final cloud = ReferenceCloud(null, media)..failPush = false;
+      cloud.duringPull = () async {
+        await repo.mutate(
+          memory.id,
+          memory.scope,
+          (current) => current.caption = 'A newer edit',
+        );
+      };
+      final app = controller(FakeEngine(), cloud);
+      await app.sync(manual: true);
+      expect(app.syncError, null);
+      final restored = (await repo.list('account-a')).single;
+      expect(restored.original, source.path);
+      expect(restored.caption, 'A newer edit');
+      expect(await source.exists(), true);
+      expect(await repo.pending('account-a'), hasLength(1));
+      app.dispose();
     },
   );
   test(

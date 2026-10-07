@@ -196,12 +196,16 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     if (automatic && !await requestCloudCutouts(context, app)) return;
     if (!mounted) return;
     setState(() => findingPlates = true);
+    final sourceRef = memory.original;
+    MediaLease? source;
+    await app.media.beginWork(memory.scope, memory.id);
     try {
+      source = await app.media.acquire(sourceRef);
       final dir = await app.media.directory(memory.scope, memory.id);
       List<Plate>? added;
       if (automatic && app.engine is MultiSubjectSegmentationEngine) {
         final multi = app.engine as MultiSubjectSegmentationEngine;
-        final plates = await multi.subjects(memory.original, dir.path);
+        final plates = await multi.subjects(source.file.path, dir.path);
         if (plates.isEmpty) {
           throw StateError(
             'No dishes found. Your existing cutouts have been kept.',
@@ -216,7 +220,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           MaterialPageRoute(
             builder: (_) => _guardPlateTool(
               PlatePicker(
-                original: memory.original,
+                original: source!.file.path,
                 directory: dir.path,
                 engine: app.engine,
                 requestCloudUpload: () => requestCloudCutouts(context, app),
@@ -274,6 +278,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
         message(context, e.toString().replaceFirst('Bad state: ', ''));
       }
     } finally {
+      await source?.close();
+      await app.media.endWork(memory.scope, memory.id);
       if (mounted) setState(() => findingPlates = false);
     }
   }
@@ -282,32 +288,46 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     if (!app.canMutate || app.scope != memory.scope) return;
     final plate = selectedPlate;
     if (plate == null) return;
-    final edited = await Navigator.push<Plate>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => _guardPlateTool(
-          PlateEdgeEditor(original: memory.original, plate: plate),
-        ),
-      ),
-    );
-    if (edited == null ||
-        !mounted ||
-        unavailable ||
-        app.scope != memory.scope) {
-      return;
-    }
+    final sourceRef = memory.original;
+    MediaLease? source;
+    await app.media.beginWork(memory.scope, memory.id);
     try {
-      final dir = await app.media.directory(memory.scope, memory.id);
-      final rendered = await renderPlate(memory.original, dir.path, edited);
-      if (!mounted || unavailable || app.scope != memory.scope) return;
-      plateChange(
-        () => memory.plates = memory.plates
-            .map((p) => p.id == rendered.id ? rendered : p)
-            .toList(),
+      source = await app.media.acquire(sourceRef);
+      if (!mounted || app.scope != memory.scope) return;
+      final edited = await Navigator.push<Plate>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => _guardPlateTool(
+            PlateEdgeEditor(original: source!.file.path, plate: plate),
+          ),
+        ),
       );
-      await _persist();
+      if (edited == null ||
+          !mounted ||
+          unavailable ||
+          app.scope != memory.scope) {
+        return;
+      }
+      try {
+        final dir = await app.media.directory(memory.scope, memory.id);
+        final rendered = await renderPlate(source.file.path, dir.path, edited);
+        if (!mounted || unavailable || app.scope != memory.scope) return;
+        plateChange(
+          () => memory.plates = memory.plates
+              .map((p) => p.id == rendered.id ? rendered : p)
+              .toList(),
+        );
+        await _persist();
+      } catch (e) {
+        if (mounted) message(context, 'Could not save the plate: $e');
+      }
     } catch (e) {
-      if (mounted) message(context, 'Could not save the plate: $e');
+      if (mounted) {
+        message(context, 'Could not open the original. Connect and try again.');
+      }
+    } finally {
+      await source?.close();
+      await app.media.endWork(memory.scope, memory.id);
     }
   }
 

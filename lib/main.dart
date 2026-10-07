@@ -47,6 +47,8 @@ class _MorslBootstrapState extends State<MorslBootstrap> {
       client = cloudClient;
       final database = await MorslDatabase.open();
       final media = MediaStore();
+      await media.cache.directory();
+      await media.cache.trim();
       final engine = CloudSegmentation(
         accessToken: () => CloudService(client, media).signedInWithGoogle
             ? client?.auth.currentSession?.accessToken

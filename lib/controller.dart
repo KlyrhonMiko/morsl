@@ -143,6 +143,8 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> _accountChanged() async {
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
     destination = 0;
     // Revoke the previous account's upload choice before any asynchronous work.
     if (engine case RemoteSegmentationEngine remote) {
@@ -302,6 +304,7 @@ class MorslController extends ChangeNotifier {
   }
 
   Future<void> _readMetadata(Memory m) async {
+    await media.beginWork(m.scope, m.id);
     try {
       final metadata = await media.metadata(m.original);
       await repository.mutate(m.id, m.scope, (current) {
@@ -319,10 +322,13 @@ class MorslController extends ChangeNotifier {
       await reload();
     } catch (_) {
       /* Missing capture metadata is an ordinary imported photo. */
+    } finally {
+      await media.endWork(m.scope, m.id);
     }
   }
 
   Future<void> _thumbnail(Memory m) async {
+    await media.beginWork(m.scope, m.id);
     try {
       final path = await media.thumbnail(m.original);
       await repository.mutate(
@@ -333,6 +339,8 @@ class MorslController extends ChangeNotifier {
       await reload();
     } catch (_) {
       /* Originals remain sufficient for editing. */
+    } finally {
+      await media.endWork(m.scope, m.id);
     }
   }
 
@@ -395,21 +403,25 @@ class MorslController extends ChangeNotifier {
         final watch = Stopwatch()..start();
         String? output, error;
         List<Plate>? plates;
+        MediaLease? source;
         try {
+          source = await media.acquire(m.original);
           final dir = await media.directory(m.scope, m.id);
           if (engine case MultiSubjectSegmentationEngine multi) {
-            plates = await multi.subjects(m.original, dir.path);
+            plates = await multi.subjects(source.file.path, dir.path);
             if (plates.isEmpty) {
               error = 'No separate plates found. Select a plate to cut it out.';
             }
           } else {
             output = await engine.process(
-              m.original,
+              source.file.path,
               p.join(dir.path, 'cutout.png'),
             );
           }
         } catch (e) {
           error = e.toString();
+        } finally {
+          await source?.close();
         }
         if (scope != account || !_canProcess) {
           await repository.mutate(m.id, m.scope, (current) {
@@ -588,9 +600,6 @@ class MorslController extends ChangeNotifier {
       }
       if (scope == account) {
         final restored = await cloud.pull(account);
-        final pending = (await repository.pending(
-          account,
-        )).map((e) => e.entity).toSet();
         final localIds = (await repository.list(
           account,
         )).map((m) => m.id).toSet();
@@ -598,8 +607,52 @@ class MorslController extends ChangeNotifier {
           if (scope != account) {
             break;
           }
-          if (!pending.contains(m.id)) {
+          Memory? previous;
+          final applied = await repository.db.transaction(() async {
+            if (scope != account) return false;
+            final pending = await repository.pending(account);
+            final before = (await repository.list(
+              account,
+            )).where((item) => item.id == m.id).firstOrNull;
+            previous = before;
+            if (pending.any((op) => op.entity == m.id) ||
+                before?.job == JobStatus.processing ||
+                before?.job == JobStatus.queued) {
+              return false;
+            }
             await repository.save(m, enqueue: false);
+            return true;
+          });
+          if (applied) {
+            if (m.original.isEmpty && previous != null) {
+              PaintingBinding.instance.imageCache.clear();
+              PaintingBinding.instance.imageCache.clearLiveImages();
+              for (final ref in {
+                previous!.original,
+                previous!.cutout,
+                previous!.thumbnail,
+                ...previous!.plates.map((plate) => plate.path),
+              }.whereType<String>()) {
+                await media.revoke(ref);
+              }
+            }
+            // Commit cloud references before pruning files. Recheck pending edits
+            // while holding the repository lock so new durable edits remain safe.
+            if (!m.demo &&
+                (m.original.isEmpty ||
+                    (MediaStore.isRemote(m.original) &&
+                        m.plates.every(
+                          (plate) => MediaStore.isRemote(plate.path),
+                        )))) {
+              await repository.db.transaction(() async {
+                if (scope == account &&
+                    !(await repository.pending(
+                      account,
+                    )).any((op) => op.entity == m.id)) {
+                  await media.removeBackedUpFiles(account, m.id);
+                }
+              });
+            }
             if (!localIds.contains(m.id)) {
               await repository.event(account, 'memory_restored', {
                 'mealId': m.id,
@@ -615,6 +668,24 @@ class MorslController extends ChangeNotifier {
             if (!m.ownsMeal && !allowed.contains(m.id)) {
               await removeLocal(m);
             }
+          }
+        }
+      }
+      await media.cache.trim();
+      if (scope == account && cloud.client != null) {
+        final last = DateTime.tryParse(
+          await repository.preference('imageCleanup:$account') ?? '',
+        );
+        if (last == null ||
+            DateTime.now().difference(last) >= const Duration(days: 1)) {
+          try {
+            await cloud.cleanupImages();
+            await repository.setPreference(
+              'imageCleanup:$account',
+              DateTime.now().toIso8601String(),
+            );
+          } catch (_) {
+            /* Cleanup retries on the next sync without blocking backup. */
           }
         }
       }
@@ -720,12 +791,18 @@ class MorslController extends ChangeNotifier {
 
   Future<void> removeLocal(Memory m) async {
     await repository.remove(m.id, m.scope);
+    PaintingBinding.instance.imageCache.clear();
+    PaintingBinding.instance.imageCache.clearLiveImages();
     for (final path in {
       m.original,
       m.cutout,
       m.thumbnail,
       ...m.plates.map((plate) => plate.path),
     }.whereType<String>().where((path) => path.isNotEmpty)) {
+      if (MediaStore.isRemote(path)) {
+        await media.revoke(path);
+        continue;
+      }
       final provider = FileImage(File(path));
       await provider.evict();
       await ResizeImage(provider, width: 700).evict();

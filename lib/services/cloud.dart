@@ -1,27 +1,32 @@
-import 'dart:io';
-
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
 
 import '../data/models.dart';
 import 'google_account.dart';
 import 'media.dart';
-import 'plates.dart';
 
 class CloudService {
   CloudService(
     this.client,
     this.media, {
     GoogleAccountPicker? googleAccountPicker,
+    this._imageClient,
   }) : _googleAccountPicker =
            googleAccountPicker ??
            (defaultTargetPlatform == TargetPlatform.android
                ? NativeGoogleAccountPicker()
-               : null);
+               : null) {
+    MediaStore.imageStore = media;
+    media.accountIdentity = () =>
+        signedInWithGoogle ? account ?? 'guest' : 'guest';
+    media.download = downloadImage;
+  }
   final SupabaseClient? client;
   final MediaStore media;
+  final http.Client? _imageClient;
   final GoogleAccountPicker? _googleAccountPicker;
   Future<void>? _signIn;
   bool get configured => client != null;
@@ -95,11 +100,16 @@ class CloudService {
 
   Future<Map<String, dynamic>> push(Memory memory) async {
     requireGoogleAccount();
+    final uploadAccount = account;
+    void checkAccount() {
+      requireGoogleAccount();
+      if (account != uploadAccount) {
+        throw StateError('Account changed during backup.');
+      }
+    }
+
     final c = client!;
     final payload = memory.toJson();
-    payload['plates'] = memory.plates
-        .map((plate) => plate.toJson(local: false))
-        .toList();
     // Only upload the creator's assets. Shared downloads are never re-uploaded.
     if (memory.ownsMeal) {
       await c.rpc('reserve_meal', params: {'meal': memory.id});
@@ -108,19 +118,19 @@ class CloudService {
         'cutout': memory.cutout,
         'thumbnail': memory.thumbnail,
       }.entries) {
+        checkAccount();
         if (item.value == null || item.value!.isEmpty) {
           continue;
         }
-        final digest = await sha256.bind(File(item.value!).openRead()).first;
+        if (MediaStore.isRemote(item.value!)) {
+          payload[item.key] = MediaStore.key(item.value!);
+          continue;
+        }
+        final bytes = await media.read(item.value!);
+        final digest = sha256.convert(bytes);
         final storagePath =
-            '${memory.id}/${memory.assetId ?? memory.id}/${item.key}-$digest${p.extension(item.value!)}';
-        await c.storage
-            .from('meal-images')
-            .upload(
-              storagePath,
-              File(item.value!),
-              fileOptions: const FileOptions(upsert: true),
-            );
+            '${memory.id}/${memory.assetId ?? memory.id}/r2/${item.key}-$digest${p.extension(item.value!).toLowerCase()}';
+        await uploadImage(storagePath, bytes);
         payload[item.key] = storagePath;
       }
     } else {
@@ -128,6 +138,22 @@ class CloudService {
       payload.remove('cutout');
       payload.remove('thumbnail');
     }
+    payload['plates'] = await Future.wait(
+      memory.plates.map((plate) async {
+        checkAccount();
+        final json = plate.toJson(local: false);
+        if (MediaStore.isRemote(plate.path) && plate.cloudPath != null) {
+          return json;
+        }
+        final bytes = await media.read(plate.path);
+        final path =
+            '${memory.id}/$uploadAccount/r2/plate-${sha256.convert(bytes)}.png';
+        await uploadImage(path, bytes);
+        json['cloudPath'] = path;
+        return json;
+      }),
+    );
+    checkAccount();
     // Atomic RPC checks both record revisions. A repeated operation at the
     // same revisions returns its previous result rather than duplicating data.
     return Map<String, dynamic>.from(
@@ -141,11 +167,7 @@ class CloudService {
     final result = <Memory>[];
     for (final raw in rows as List) {
       final j = Map<String, dynamic>.from(raw);
-      final dir = await media.directory(account, j['id']);
       if (j['original'] == null || j['original'] == '') {
-        if (await dir.exists()) {
-          await dir.delete(recursive: true);
-        }
         j['original'] = '';
         j['cutout'] = null;
         j['thumbnail'] = null;
@@ -156,24 +178,20 @@ class CloudService {
         if (remote == null || remote.isEmpty) {
           continue;
         }
-        final target = File(p.join(dir.path, p.basename(remote)));
-        // Download before committing the restored record. Interrupted writes
-        // remain .partial files and cannot appear as complete memories.
-        if (!await target.exists()) {
-          final bytes = await c.storage.from('meal-images').download(remote);
-          final partial = File('${target.path}.partial');
-          await partial.writeAsBytes(bytes, flush: true);
-          await partial.rename(target.path);
-        }
-        j[key] = target.path;
+        j[key] = MediaStore.remote(remote);
+        media.authorize(j[key]);
       }
       j['scope'] = account;
       final restored = Memory.fromJson(j);
-      restored.plates = await Future.wait(
-        restored.plates.map(
-          (plate) => renderPlate(restored.original, dir.path, plate),
-        ),
-      );
+      for (final plate in restored.plates) {
+        if (plate.cloudPath == null) {
+          throw StateError(
+            'This meal uses an older image format. Start with a fresh scrapbook.',
+          );
+        }
+        plate.path = MediaStore.remote(plate.cloudPath!);
+        media.authorize(plate.path);
+      }
       restored.job = restored.plates.isNotEmpty || restored.cutout != null
           ? JobStatus.ready
           : JobStatus.failed;
@@ -213,26 +231,86 @@ class CloudService {
   Future<void> deleteMeal(String meal) async {
     requireGoogleAccount();
     await client!.rpc('delete_meal', params: {'meal': meal});
+    try {
+      await cleanupImages(meal: meal);
+    } catch (_) {
+      /* Daily sweep retries after the durable deletion. */
+    }
   }
 
   Future<void> removeAsset(Memory memory) async {
     requireGoogleAccount();
-    final paths = await client!
-        .from('meal_assets')
-        .select('original,cutout,thumbnail')
-        .eq('meal_id', memory.id)
-        .single();
-    // Remove every generated version, not just the current cutout reference.
-    final prefix = paths['original'].split('/').take(2).join('/');
-    final versions = await client!.storage
-        .from('meal-images')
-        .list(path: prefix);
-    final files = versions.map((object) => '$prefix/${object.name}').toList();
-    if (files.isNotEmpty) {
-      await client!.storage.from('meal-images').remove(files);
-    }
     await client!.rpc('remove_my_asset', params: {'meal': memory.id});
+    try {
+      await cleanupImages(meal: memory.id);
+    } catch (_) {
+      /* Daily sweep retries. */
+    }
   }
+
+  Future<void> cleanupImages({String? meal}) async {
+    requireGoogleAccount();
+    await client!.functions.invoke(
+      'image-storage',
+      body: {'action': 'cleanup', 'meal': ?meal},
+    );
+  }
+
+  Future<String> _imageUrl(String action, String path, {int? size}) async {
+    requireGoogleAccount();
+    final requestedBy = account;
+    final response = await client!.functions.invoke(
+      'image-storage',
+      body: {'action': action, 'key': path, 'size': ?size},
+    );
+    final url = response.data['url'] as String?;
+    if (requestedBy != account) throw StateError('Account changed.');
+    if (url == null) throw StateError('Image storage is unavailable.');
+    return url;
+  }
+
+  Future<Uint8List> downloadImage(String path) async {
+    final accountBefore = account;
+    final url = await _imageUrl('download', path);
+    final response =
+        await (_imageClient?.get(Uri.parse(url)) ?? http.get(Uri.parse(url)))
+            .timeout(const Duration(seconds: 60));
+    if (response.statusCode != 200) {
+      throw StateError('Image could not be loaded. Connect and try again.');
+    }
+    if (accountBefore != account) throw StateError('Account changed.');
+    return response.bodyBytes;
+  }
+
+  Future<void> uploadImage(String path, Uint8List bytes) async {
+    final url = await _imageUrl('upload', path, size: bytes.length);
+    final response =
+        await (_imageClient?.put(
+                  Uri.parse(url),
+                  body: bytes,
+                  headers: {'Content-Type': imageContentType(path)},
+                ) ??
+                http.put(
+                  Uri.parse(url),
+                  body: bytes,
+                  headers: {'Content-Type': imageContentType(path)},
+                ))
+            .timeout(const Duration(seconds: 60));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError(
+        'Photo upload failed. Your local copy is safe; try syncing again.',
+      );
+    }
+  }
+
+  static String imageContentType(String path) =>
+      switch (p.extension(path).toLowerCase()) {
+        '.png' => 'image/png',
+        '.webp' => 'image/webp',
+        '.heic' => 'image/heic',
+        '.heif' => 'image/heif',
+        _ => 'image/jpeg',
+      };
 
   Future<List<Map<String, dynamic>>> venues(double lat, double lng) async {
     requireGoogleAccount();

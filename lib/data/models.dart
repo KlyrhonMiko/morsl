@@ -3,12 +3,13 @@ import 'dart:convert';
 enum JobStatus { queued, processing, ready, failed }
 
 /// An alpha mask over a region of the unchanged original, and its placement.
-/// Only the mask and normalized coordinates travel in backup, never local paths.
+/// Masks, coordinates, and R2 object references travel in backup; local paths do not.
 class Plate {
   Plate({
     required this.id,
     required this.mask,
     this.path = '',
+    this.cloudPath,
     this.left = 0,
     this.top = 0,
     this.width = 1,
@@ -21,10 +22,12 @@ class Plate {
   });
   final String id;
   String mask, path;
+  String? cloudPath;
   double left, top, width, height, aspect, x, y, scale, rotation;
   Map<String, dynamic> toJson({bool local = true}) => {
     'id': id,
     'mask': mask,
+    if (cloudPath != null) 'cloudPath': cloudPath,
     if (local) 'path': path,
     'left': left,
     'top': top,
@@ -41,6 +44,7 @@ class Plate {
     id: j['id'],
     mask: j['mask'],
     path: j['path'] ?? '',
+    cloudPath: j['cloudPath'],
     left: (j['left'] as num?)?.toDouble() ?? 0,
     top: (j['top'] as num?)?.toDouble() ?? 0,
     width: (j['width'] as num?)?.toDouble() ?? 1,

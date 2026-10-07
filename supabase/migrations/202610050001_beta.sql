@@ -225,19 +225,6 @@ begin
 end;
 $$;
 
-insert into storage.buckets(id,name,public) values('meal-images','meal-images',false) on conflict(id) do nothing;
-create policy meal_images_read on storage.objects for select to authenticated using (
-  bucket_id='meal-images' and can_access_meal(case when (storage.foldername(name))[1] ~ '^[0-9a-fA-F-]{36}$' then (storage.foldername(name))[1]::uuid else null end)
-  and (owner_id=auth.uid()::text or exists(select 1 from meal_assets a where a.original=name or a.cutout=name or a.thumbnail=name))
-);
-create policy meal_images_insert on storage.objects for insert to authenticated with check (
-  bucket_id='meal-images' and exists(select 1 from meals where id::text=(storage.foldername(name))[1] and creator=auth.uid() and deleted_at is null)
-);
-create policy meal_images_update on storage.objects for update to authenticated using (
-  bucket_id='meal-images' and owner_id=auth.uid()::text and exists(select 1 from meals where id::text=(storage.foldername(name))[1] and creator=auth.uid() and deleted_at is null)
-) with check (bucket_id='meal-images' and owner_id=auth.uid()::text and exists(select 1 from meals where id::text=(storage.foldername(name))[1] and creator=auth.uid() and deleted_at is null));
-create policy meal_images_delete on storage.objects for delete to authenticated using (bucket_id='meal-images' and owner_id=auth.uid()::text);
-
 -- No anonymous invocation of SECURITY DEFINER functions.
 revoke all on function public.can_access_meal(uuid),public.reserve_meal(uuid),public.save_memory(jsonb),public.restore_memories(),
   public.invite_to_meal(uuid,text),public.my_invitations(),public.respond_to_invitation(uuid,boolean),

@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'media_image.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -587,8 +587,8 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
                     style: TextStyle(fontSize: 11, color: Palette.muted),
                   ),
                 )
-              : Image.file(
-                  File(path),
+              : Image(
+                  image: mediaImage(path),
                   fit: BoxFit.contain,
                   errorBuilder: (c, e, s) =>
                       const Icon(Icons.broken_image_outlined),
