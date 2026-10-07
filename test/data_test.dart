@@ -233,13 +233,12 @@ void main() {
       final saved = (await repo.list('guest')).single;
       expect(saved.originals, hasLength(2));
       expect(saved.original, isNot(saved.photos.single.original));
+      expect(img.decodeJpg(await File(saved.original).readAsBytes())!.width, 4);
       expect(
-        await File(saved.original).readAsBytes(),
-        await first.readAsBytes(),
-      );
-      expect(
-        await File(saved.photos.single.original).readAsBytes(),
-        await second.readAsBytes(),
+        img
+            .decodeJpg(await File(saved.photos.single.original).readAsBytes())!
+            .width,
+        8,
       );
       app.active = true;
       await app.processQueue();
@@ -433,8 +432,12 @@ void main() {
 
   test('durable draft and exact composition survive database reopen', () async {
     final source = File('${temp.path}/camera-cache.jpg');
-    await source.writeAsBytes([1, 2, 3], flush: true);
+    await source.writeAsBytes(
+      img.encodeJpg(img.Image(width: 4, height: 4)),
+      flush: true,
+    );
     final durable = await media.preserve(XFile(source.path), 'guest', 'meal-1');
+    final durableBytes = await File(durable).readAsBytes();
     await source.delete();
     final m = meal('guest')
       ..original = durable
@@ -452,7 +455,7 @@ void main() {
     repo = MemoryRepository(db);
     final restored = (await repo.list('guest')).single;
     expect(restored.original, m.original);
-    expect(await File(restored.original).readAsBytes(), [1, 2, 3]);
+    expect(await File(restored.original).readAsBytes(), durableBytes);
     expect(restored.caption, 'Our lunch');
     expect(restored.x, .17);
     expect(restored.y, -.08);

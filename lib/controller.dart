@@ -255,8 +255,19 @@ class MorslController extends ChangeNotifier {
     requireGoogleAccount();
     final account = scope;
     final photos = source == ImageSource.gallery
-        ? await ImagePicker().pickMultiImage(imageQuality: 95)
-        : [?await ImagePicker().pickImage(source: source, imageQuality: 95)];
+        ? await ImagePicker().pickMultiImage(
+            imageQuality: 100,
+            maxWidth: 2048,
+            maxHeight: 2048,
+          )
+        : [
+            ?await ImagePicker().pickImage(
+              source: source,
+              imageQuality: 100,
+              maxWidth: 2048,
+              maxHeight: 2048,
+            ),
+          ];
     if (photos.isEmpty) {
       return null;
     }
@@ -340,8 +351,19 @@ class MorslController extends ChangeNotifier {
     }
     final account = scope;
     final picked = source == ImageSource.gallery
-        ? await ImagePicker().pickMultiImage(imageQuality: 95)
-        : [?await ImagePicker().pickImage(source: source, imageQuality: 95)];
+        ? await ImagePicker().pickMultiImage(
+            imageQuality: 100,
+            maxWidth: 2048,
+            maxHeight: 2048,
+          )
+        : [
+            ?await ImagePicker().pickImage(
+              source: source,
+              imageQuality: 100,
+              maxWidth: 2048,
+              maxHeight: 2048,
+            ),
+          ];
     if (picked.isEmpty) return;
     await media.beginWork(account, memory.id);
     try {

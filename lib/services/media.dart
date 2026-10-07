@@ -115,19 +115,17 @@ class MediaStore {
 
   Future<Directory> directory(String scope, String id) async {
     final root = await getApplicationDocumentsDirectory();
-    return Directory(p.join(root.path, 'morsl', scope, id))
-        .create(recursive: true);
+    return Directory(
+      p.join(root.path, 'morsl', scope, id),
+    ).create(recursive: true);
   }
 
   Future<String> preserve(XFile photo, String scope, String id) async {
     final dir = await directory(scope, id);
-    final extension = p.extension(photo.path).toLowerCase();
-    final target = p.join(
-      dir.path,
-      'original${extension.isEmpty ? '.jpg' : extension}',
-    );
-    await File(photo.path).copy(target);
-    return target;
+    return compute(_preserveStill, {
+      'source': photo.path,
+      'target': p.join(dir.path, 'original.jpg'),
+    });
   }
 
   Future<String> sample(
@@ -148,6 +146,57 @@ class MediaStore {
   Future<String?> thumbnail(String original) => compute(_thumbnail, original);
   Future<Map<String, dynamic>> metadata(String original) =>
       compute(_metadata, original);
+}
+
+/// Re-encoding pixels produces a still JPEG with no appended video or animation.
+/// Do not fall back to copying an unsupported source: it could retain motion data.
+String _preserveStill(Map<String, String> paths) {
+  img.Image? decoded;
+  try {
+    decoded = img.decodeImage(
+      File(paths['source']!).readAsBytesSync(),
+      frame: 0,
+    );
+  } catch (_) {
+    throw StateError(
+      'This photo could not be converted. Export it as a JPEG or PNG and try again.',
+    );
+  }
+  if (decoded == null) {
+    throw StateError(
+      'This photo could not be converted. Export it as a JPEG or PNG and try again.',
+    );
+  }
+  // Retain only the metadata used for meal dates and optional venue suggestions.
+  // This excludes motion-photo XMP, maker notes, embedded thumbnails and videos.
+  final metadata = img.ExifData();
+  final date = decoded.exif.exifIfd[0x9003];
+  if (date != null) metadata.exifIfd[0x9003] = date.clone();
+  for (final tag in [1, 2, 3, 4]) {
+    final value = decoded.exif.gpsIfd[tag];
+    if (value != null) metadata.gpsIfd[tag] = value.clone();
+  }
+  var still = img.bakeOrientation(decoded);
+  if (still.width > 2048 || still.height > 2048) {
+    still = img.copyResize(
+      still,
+      width: still.width >= still.height ? 2048 : null,
+      height: still.height > still.width ? 2048 : null,
+      interpolation: img.Interpolation.average,
+    );
+  }
+  still.exif = metadata;
+  still.iccProfile = null;
+  still.textData = null;
+  final target = File(paths['target']!);
+  final partial = File('${target.path}.partial');
+  try {
+    partial.writeAsBytesSync(img.encodeJpg(still, quality: 85), flush: true);
+    partial.renameSync(target.path);
+  } finally {
+    if (partial.existsSync()) partial.deleteSync();
+  }
+  return target.path;
 }
 
 class MediaLease {
