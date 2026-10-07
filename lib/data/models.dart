@@ -264,7 +264,7 @@ class LibraryPlate {
       ? memory.caption
       : 'Untitled plate';
   static List<LibraryPlate> fromMemories(Iterable<Memory> memories) => [
-    for (final memory in memories.where((m) => !m.archived))
+    for (final memory in memories.where((m) => !m.archived && !m.draft))
       if (memory.plates.isNotEmpty)
         for (final plate in memory.plates.where((p) => p.path.isNotEmpty))
           LibraryPlate(memory, plate.id, plate.path)

@@ -78,19 +78,27 @@ Future<void> showCapture(
     return;
   }
   await guarded(context, () async {
-    if (app.usesCloudCutouts &&
-        app.cloudCutoutsSignedIn &&
-        !app.cloudCutoutsDecided) {
-      await requestCloudCutouts(context, app);
-      if (!context.mounted) return;
-    }
     final m = await app.capture(
       choice.$1,
       locate: choice.$2 && choice.$1 == ImageSource.camera,
     );
     if (m != null && context.mounted) {
-      message(context, 'Saved for later. Your original is safe.');
-      onOpen(m);
+      app.navigate(2);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Photo saved in Drafts. Enjoy your meal.'),
+          action: SnackBarAction(
+            label: 'Edit now',
+            onPressed: () {
+              if (!context.mounted || app.scope != m.scope) return;
+              final current = app.memories
+                  .where((memory) => memory.id == m.id)
+                  .firstOrNull;
+              if (current != null) onOpen(current);
+            },
+          ),
+        ),
+      );
     }
   });
 }
@@ -116,7 +124,7 @@ class _CaptureSheetState extends State<CaptureSheet> {
           const Handwriting('What’s on your table?', size: 36),
           const SizedBox(height: 12),
           const Text(
-            'We’ll save the original first. You can make it a memory now or come back later.',
+            'Snap your meal, then enjoy it. We’ll save a draft and generate cutouts so you can edit later.',
             style: TextStyle(color: Palette.muted),
           ),
           const SizedBox(height: 20),
@@ -855,8 +863,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   title: const Text('Cloud cutouts'),
                   subtitle: Text(
                     app.cloudCutoutsSignedIn
-                        ? 'Upload meal photos to Modal for plate extraction. Manual editing works offline.'
-                        : 'Sign in to enable cloud cutouts. Manual editing works offline.',
+                        ? 'On by default. Meal photos are sent to Modal for automatic cutouts. Clean up edges afterward if needed.'
+                        : 'Sign in for automatic cloud cutouts, then clean up edges if needed.',
                   ),
                   value: app.cloudCutoutsAllowed,
                   onChanged: !app.cloudCutoutsSignedIn

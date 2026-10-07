@@ -532,7 +532,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                       const SizedBox(width: 12),
                       const Expanded(
                         child: Text(
-                          'A perfect cutout is optional. A good memory isn’t.',
+                          'Enjoy your meal first. Cutouts stay here until you finish editing and save to the Library.',
                           style: TextStyle(fontSize: 12, color: Palette.forest),
                         ),
                       ),

@@ -200,6 +200,8 @@ void main() {
     );
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Creating your cutout…'), findsOneWidget);
+    expect(find.text('Manual cleanup'), findsNothing);
+    expect(find.text('Add a missed plate'), findsNothing);
     expect(find.byKey(const ValueKey('cutout-photo-shimmer')), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
     await tester.runAsync(() async {
@@ -220,6 +222,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Creating your cutout…'), findsNothing);
     expect(find.byKey(const ValueKey('cutout-photo-shimmer')), findsNothing);
+    expect(find.text('Manual cleanup'), findsOneWidget);
     expect(find.byType(CircularProgressIndicator), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -281,7 +284,7 @@ void main() {
         find.text('Sign in with Google to start your own scrapbook.'),
         findsOneWidget,
       );
-      expect(find.text('Save to library'), findsNothing);
+      expect(find.text('Finish & save'), findsNothing);
       expect(find.text('Separate dishes'), findsNothing);
       expect(find.byType(TextField), findsNothing);
     },
@@ -311,6 +314,66 @@ void main() {
     expect(find.text('A little map of your life.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+  testWidgets('a ready draft can be edited later, reopened, and finished', (
+    tester,
+  ) async {
+    final memory = app.memories.first.copy()..draft = true;
+    await tester.runAsync(() async {
+      await app.repository.save(memory);
+      await app.reload();
+    });
+    await tester.pumpWidget(
+      host(
+        MaterialApp(
+          theme: morslTheme(),
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => PlatingEditor(memory: app.memories.single),
+                  ),
+                ),
+                child: const Text('Open draft'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open draft'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'After lunch');
+    await tester.tap(find.text('Edit later'));
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+    expect(app.destination, 2);
+    final draft = await tester.runAsync(() => app.repository.list('guest'));
+    expect(draft!.single.draft, true);
+    expect(draft.single.caption, 'After lunch');
+    expect(LibraryPlate.fromMemories(draft), isEmpty);
+    await tester.tap(find.text('Open draft'));
+    await tester.pumpAndSettle();
+    expect(find.text('After lunch'), findsOneWidget);
+    await tester.tap(find.text('Finish & save'));
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+    final finished = await tester.runAsync(() => app.repository.list('guest'));
+    expect(finished!.single.draft, false);
+    expect(finished.single.caption, 'After lunch');
+    expect(LibraryPlate.fromMemories(finished), hasLength(1));
+    expect(app.destination, 0);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+  });
+
   testWidgets('failed cutout can be edited and saved without processing', (
     tester,
   ) async {
@@ -333,8 +396,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Save to library'), findsOneWidget);
-    await tester.tap(find.text('Save to library'));
+    expect(find.text('Finish & save'), findsOneWidget);
+    await tester.tap(find.text('Finish & save'));
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     });
@@ -384,7 +447,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
-      expect(find.text('Save to library'), findsOneWidget);
+      expect(find.text('Finish & save'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       await tester.runAsync(() async {
         await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -476,6 +539,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      expect(find.text('Clean up edges'), findsOneWidget);
+      expect(find.text('Add a missed plate'), findsOneWidget);
       await tester.ensureVisible(find.text('Separate dishes'));
       await tester.tap(find.text('Separate dishes'));
       await tester.pump();
@@ -553,7 +618,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('Save to library'), findsOneWidget);
+    expect(find.text('Finish & save'), findsOneWidget);
     await tester.runAsync(() async {
       await app.repository.remove(memory.id, 'guest');
       await app.reload();
@@ -563,7 +628,7 @@ void main() {
       find.text('This memory is no longer in this scrapbook.'),
       findsOneWidget,
     );
-    expect(find.text('Save to library'), findsNothing);
+    expect(find.text('Finish & save'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(milliseconds: 100));

@@ -334,12 +334,22 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   Future<void> saveMemory() async {
     if (!app.canMutate || app.scope != memory.scope) return;
     debounce?.cancel();
-    memory.draft = memory.plates.isEmpty && memory.cutout?.isNotEmpty != true;
+    if (memory.plates.isEmpty && memory.cutout?.isNotEmpty != true) {
+      message(
+        context,
+        'Your draft is saved. Add a plate cutout before finishing.',
+      );
+      await _persist();
+      return;
+    }
+    final wasDraft = memory.draft;
+    memory.draft = false;
     await _persist();
     if (!mounted || !app.canMutate || app.scope != memory.scope) {
       return;
     }
     if (status.startsWith('Could not')) {
+      memory.draft = wasDraft;
       message(context, status);
       return;
     }
@@ -353,12 +363,22 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       return;
     }
     app.navigate(0);
-    message(
-      context,
-      memory.draft
-          ? 'Meal details saved. Finish the cutouts in Drafts.'
-          : 'Your plates are in the library.',
-    );
+    message(context, 'Your plates are in the library.');
+    Navigator.of(context).pop();
+    unawaited(app.sync());
+  }
+
+  Future<void> editLater() async {
+    if (!app.canMutate || app.scope != memory.scope) return;
+    debounce?.cancel();
+    await _persist();
+    if (!mounted || !app.canMutate || app.scope != memory.scope) return;
+    if (status.startsWith('Could not')) {
+      message(context, status);
+      return;
+    }
+    app.navigate(2);
+    message(context, 'Draft saved. Come back whenever you’re ready.');
     Navigator.of(context).pop();
     unawaited(app.sync());
   }
@@ -613,24 +633,33 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                 color: Palette.paper,
                 border: Border(top: BorderSide(color: Palette.line)),
               ),
-              child: Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  const Icon(
-                    Icons.lock_outline_rounded,
-                    size: 15,
-                    color: Palette.muted,
+                  Text(
+                    memory.draft
+                        ? 'Draft saved on this device. Finish whenever you’re ready.'
+                        : 'All edits saved on this device.',
+                    style: const TextStyle(fontSize: 12, color: Palette.muted),
                   ),
-                  const SizedBox(width: 8),
-                  const Expanded(
-                    child: Text(
-                      'Saved locally. Always yours.',
-                      style: TextStyle(fontSize: 10, color: Palette.muted),
-                    ),
-                  ),
-                  FilledButton.icon(
-                    onPressed: saveMemory,
-                    icon: const Icon(Icons.check_rounded, size: 18),
-                    label: const Text('Save to library'),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      if (memory.draft)
+                        TextButton(
+                          onPressed: editLater,
+                          child: const Text('Edit later'),
+                        ),
+                      FilledButton.icon(
+                        onPressed: saveMemory,
+                        icon: const Icon(Icons.check_rounded, size: 18),
+                        label: const Text('Finish & save'),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -808,6 +837,13 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Text(
+          app.usesCloudCutouts && !app.cloudCutoutsAllowed
+              ? 'Cloud cutouts are off. Enable them in Settings or use manual cleanup.'
+              : 'Cutouts run automatically. Use manual cleanup afterward if needed.',
+          style: const TextStyle(color: Palette.muted, fontSize: 12),
+        ),
+        const SizedBox(height: 8),
         if (memory.plates.isNotEmpty) ...[
           Text(
             '${memory.plates.length} separate plates - select one to edit its edges',
@@ -834,16 +870,13 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           spacing: 8,
           runSpacing: 8,
           children: [
-            OutlinedButton.icon(
-              onPressed: findingPlates || memory.original.isEmpty
-                  ? null
-                  : () => addPlate(),
-              icon: const Icon(Icons.crop_free, size: 18),
-              label: const Text('Select a plate'),
-            ),
-            TextButton.icon(
+            FilledButton.icon(
               onPressed:
                   findingPlates ||
+                      memory.job == JobStatus.processing ||
+                      (memory.job == JobStatus.queued &&
+                          app.cloudCutoutsAllowed &&
+                          app.online) ||
                       memory.original.isEmpty ||
                       app.engine is! MultiSubjectSegmentationEngine
                   ? null
@@ -857,7 +890,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
               TextButton.icon(
                 onPressed: findingPlates ? null : editPlate,
                 icon: const Icon(Icons.brush_outlined, size: 18),
-                label: const Text('Edit edges'),
+                label: const Text('Clean up edges'),
               ),
               TextButton.icon(
                 onPressed: findingPlates
@@ -877,6 +910,21 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                 label: const Text('Remove plate'),
               ),
             ],
+            if (memory.job != JobStatus.processing &&
+                (memory.job != JobStatus.queued ||
+                    !app.cloudCutoutsAllowed ||
+                    !app.online))
+              TextButton.icon(
+                onPressed: findingPlates || memory.original.isEmpty
+                    ? null
+                    : () => addPlate(),
+                icon: const Icon(Icons.crop_free, size: 18),
+                label: Text(
+                  memory.plates.isNotEmpty
+                      ? 'Add a missed plate'
+                      : 'Manual cleanup',
+                ),
+              ),
           ],
         ),
       ],

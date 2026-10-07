@@ -30,7 +30,7 @@ Future<bool> requestCloudCutouts(
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(dialog, false),
-          child: const Text('Use manual cutouts'),
+          child: const Text('Keep cloud cutouts off'),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(dialog, true),

@@ -12,6 +12,7 @@ void main() {
     createdAt: DateTime(2026, 10, 6, 12, 30),
     original: 'source.jpg',
     venue: 'A restaurant',
+    draft: false,
     plates: [
       Plate(id: 'salad', mask: 'mask', path: 'salad.png'),
       Plate(id: 'pasta', mask: 'mask', path: 'pasta.png'),
@@ -51,6 +52,13 @@ void main() {
     expect(entries.single.path, 'legacy.png');
     final oldJson = legacy.toJson()..remove('plateReviews');
     expect(Memory.fromJson(oldJson).plateReviews, isEmpty);
+  });
+
+  test('ready cutouts stay out of the library until the draft is finished', () {
+    final draft = meal('draft')..draft = true;
+    expect(LibraryPlate.fromMemories([draft]), isEmpty);
+    draft.draft = false;
+    expect(LibraryPlate.fromMemories([draft]), hasLength(2));
   });
 
   test(

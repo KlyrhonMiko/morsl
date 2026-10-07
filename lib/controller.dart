@@ -187,7 +187,8 @@ class MorslController extends ChangeNotifier {
       final choice = await repository.preference('cloudCutouts:v1:$account');
       if (scope != account) return;
       cloudCutoutsDecided = choice != null;
-      remote.uploadsAllowed = choice == 'true';
+      // Cloud processing is the default; keep an explicit account opt-out.
+      remote.uploadsAllowed = remote.authenticated && choice != 'false';
     }
   }
 

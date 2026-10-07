@@ -7,7 +7,9 @@ photo → cut out individual plates → Library. Each plate keeps its restaurant
 and companions, plus an independent 1–5 star rating and optional note. Choose any
 plates from the library to arrange into one photo; save an editable creation or
 export a 1600 × 1600 PNG. Arrangements are saved on this device, separately from
-source meals. Photos still waiting for cutouts stay in Drafts.
+source meals. Every new capture or import stays in Drafts, including after cutouts
+are ready, until the user chooses **Finish & save**. Capture returns to Drafts with
+an **Edit now** shortcut; users can eat first and return to edit later.
 
 ## Run the local beta
 
@@ -17,8 +19,9 @@ flutter run -d <your-android-device-id>
 ```
 
 Automatic cutouts use the cloud segmentation endpoint on Modal and require an
-internet connection, Google sign-in, and explicit cloud-processing consent.
-No local model download is required. Approved photos are uploaded for processing.
+internet connection and Google sign-in. Cloud cutouts are enabled by default;
+an explicit opt-out in Settings is remembered per account on this device.
+No local model download is required. Meal photos are uploaded for processing.
 Each detected dish gets its own
 transparent mask and independent placement.
 Automatic dish masks retain food inside the dish outline. Enclosed gaps are
@@ -26,7 +29,8 @@ filled; sparse or photo-edge-clipped rims use a convex outline fallback.
 Detections smaller than 1% of the uploaded image are omitted to reduce tiny
 background dishes and screenshot gallery thumbnails. Very small dishes or
 irregular, overlapping outlines may still need the manual edge tools.
-New imports run this automatically when cloud cutouts are enabled in Settings.
+New imports run this automatically. Manual cleanup afterward can refine edges
+or add a missed plate; it also provides recovery when cloud processing fails.
 For older merged results, **Separate dishes**
 in Meal details replaces the current cutouts in one step. It can reset existing plate
 positions and edge edits, so use it when you want to regenerate them.
@@ -39,8 +43,10 @@ for the current deployment script and client integration.
 
 First launch includes clearly labeled example memories and an example draft.
 Saved examples include bundled transparent food cutouts from their source photos;
-existing examples are upgraded in place. Newly captured meals automatically show
-their successful cutouts in the plate library. Original photos remain as source
+existing examples are upgraded in place. Newly captured meals generate cutouts
+automatically and keep them in Drafts until **Finish & save** adds them to the
+plate library. **Edit later** saves changes and keeps the meal in Drafts.
+Original photos remain as source
 material for edge corrections; there is no original/cutout or layout selector.
 Bundled examples stay local and never upload. Google sign-in is required for camera,
 import, manual editing, bookmarks, sharing, exports, and changes to settings. Guests
@@ -225,7 +231,7 @@ node test/backend_security.mjs
 
 This validates the migration and authorization/revision logic locally; it does
 not replace real Supabase Auth, R2 HTTP access, or two-account device tests.
-R2 authorization and URL signing checks are in `supabase/functions/image-storage/`.
+R2 authorization, transfer metering, and storage checks are in `supabase/functions/image-storage/`.
 Physical-device cutout quality and live two-account service verification remain release gates.
 
 ## Scope and operational notes
@@ -234,7 +240,7 @@ No public feed, restaurant ranking, or automatic dish naming.
 Processing is active-app work with launch recovery, not a promise of
 execution after termination. Background workers can be added after device testing.
 Guest browsing does not upload photos. Signed-in automatic extraction uploads
-photos to Modal only after explicit consent, remembered per account and device.
+photos to Modal by default, unless disabled in Settings for that account and device.
 Account backup is separate. Legacy guest memories can be associated after Google sign-in.
 JSON beta exports contain IDs and runtime details; export is a deliberate user action.
 

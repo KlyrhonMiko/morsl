@@ -47,6 +47,13 @@ class FakePlateEngine extends FakeEngine
   }
 }
 
+class FakeRemoteEngine extends FakeEngine implements RemoteSegmentationEngine {
+  @override
+  bool authenticated = true;
+  @override
+  bool uploadsAllowed = false;
+}
+
 class TestMedia extends MediaStore {
   TestMedia(this.root);
   final Directory root;
@@ -185,6 +192,39 @@ void main() {
         reminders: DraftReminders(),
       );
 
+  test('cloud cutouts default on and preserve an account opt-out', () async {
+    final engine = FakeRemoteEngine();
+    var app = controller(engine, TestGoogleCloud(null, media));
+    await app.initialize(seedExamples: false);
+    expect(app.cloudCutoutsAllowed, true);
+    await app.setCloudCutoutsAllowed(false);
+    app.dispose();
+
+    app = controller(FakeRemoteEngine(), TestGoogleCloud(null, media));
+    await app.initialize(seedExamples: false);
+    expect(app.cloudCutoutsAllowed, false);
+    await app.setCloudCutoutsAllowed(true);
+    app.dispose();
+
+    app = controller(FakeRemoteEngine(), TestGoogleCloud(null, media));
+    await app.initialize(seedExamples: false);
+    expect(app.cloudCutoutsAllowed, true);
+    app.dispose();
+  });
+
+  test(
+    'cloud cutouts remain disabled without an authenticated session',
+    () async {
+      final app = controller(
+        FakeRemoteEngine()..authenticated = false,
+        CloudService(null, media),
+      );
+      await app.initialize(seedExamples: false);
+      expect(app.cloudCutoutsAllowed, false);
+      app.dispose();
+    },
+  );
+
   test(
     'OAuth callback errors are handled and do not expose authorization codes',
     () async {
@@ -282,6 +322,26 @@ void main() {
       app.dispose();
     },
   );
+  test('successful automatic cutouts leave the meal in Drafts', () async {
+    await File('${temp.path}/original.jpg').writeAsBytes([1, 2, 3]);
+    final m = meal('guest');
+    await repo.save(m);
+    final app = controller(FakePlateEngine(), TestGoogleCloud(null, media));
+    await app.processQueue();
+    final saved = (await repo.list('guest')).single;
+    expect(saved.job, JobStatus.ready);
+    expect(saved.plates, hasLength(1));
+    expect(saved.draft, true);
+    expect(LibraryPlate.fromMemories([saved]), isEmpty);
+    await db.close();
+    db = MorslDatabase(NativeDatabase(File('${temp.path}/test.sqlite')));
+    repo = MemoryRepository(db);
+    final reopened = (await repo.list('guest')).single;
+    expect(reopened.draft, true);
+    expect(reopened.plates, hasLength(1));
+    app.dispose();
+  });
+
   test('edits made during extraction survive completion', () async {
     await File('${temp.path}/original.jpg').writeAsBytes([1, 2, 3]);
     final m = meal('guest');

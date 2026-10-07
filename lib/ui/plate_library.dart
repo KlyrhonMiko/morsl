@@ -97,10 +97,7 @@ class _PlateLibraryState extends State<PlateLibrary> {
     final keys = all.map((p) => p.key).toSet();
     final count = selected.where(keys.contains).length;
     final pending = widget.app.memories
-        .where(
-          (m) =>
-              !m.archived && m.plates.isEmpty && m.cutout?.isNotEmpty != true,
-        )
+        .where((m) => !m.archived && m.draft)
         .length;
     return Column(
       children: [
@@ -155,7 +152,7 @@ class _PlateLibraryState extends State<PlateLibrary> {
                       Padding(
                         padding: const EdgeInsets.only(top: 16),
                         child: Text(
-                          '$pending ${pending == 1 ? 'photo is' : 'photos are'} waiting for cutouts. Find them in Drafts.',
+                          '$pending ${pending == 1 ? 'meal is' : 'meals are'} saved in Drafts. Finish editing whenever you’re ready.',
                           style: const TextStyle(color: Palette.muted),
                         ),
                       ),
