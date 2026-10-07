@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -9,27 +8,7 @@ import 'package:path/path.dart' as p;
 
 import '../data/models.dart';
 
-/// Fit every detected dish between the date and caption on the .91-aspect card.
-void arrangePlates(List<Plate> plates) {
-  if (plates.isEmpty) return;
-  final columns = plates.length == 1 ? 1 : (plates.length > 6 ? 3 : 2);
-  final rows = (plates.length / columns).ceil();
-  final cellWidth = .84 / columns;
-  final cellHeight = .62 / rows;
-  for (var i = 0; i < plates.length; i++) {
-    final plate = plates[i];
-    plate.scale = math.min(
-      cellWidth * .91,
-      cellHeight * .91 * plate.aspect / .91,
-    );
-    plate.x = .08 + (i % columns) * cellWidth + (cellWidth - plate.scale) / 2;
-    plate.y =
-        .12 +
-        (i ~/ columns) * cellHeight +
-        (cellHeight - plate.scale * .91 / plate.aspect) / 2;
-    plate.rotation = 0;
-  }
-}
+export '../ui/plate_layout.dart' show arrangePlates;
 
 Future<Plate> renderPlate(
   String original,

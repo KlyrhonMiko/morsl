@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../data/models.dart';
 import 'theme.dart';
 import 'cutout_status.dart';
+import 'plate_layout.dart';
 
 class MemoryCanvas extends StatefulWidget {
   const MemoryCanvas({
@@ -49,6 +50,7 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
       final unit = w / 360;
       final compact = memory.layout == 'postcard';
       final cutout = memory.displaysCutout;
+      final plates = displayPlates(memory.plates);
       final centered = memory.layout == 'centered';
       final imageHeight = h * (cutout ? .62 : .54);
       final photo = memory.displayPath;
@@ -114,7 +116,7 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                     ),
                   ),
                   if (cutout && memory.plates.isNotEmpty)
-                    for (final plate in memory.plates)
+                    for (final plate in plates)
                       Positioned(
                         left: plate.x * w,
                         top: plate.y * h,
@@ -152,8 +154,7 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                                     ),
                                   ),
                             child: Semantics(
-                              label:
-                                  'Plate ${memory.plates.indexOf(plate) + 1}',
+                              label: 'Plate ${plates.indexOf(plate) + 1}',
                               child: Container(
                                 decoration: widget.selectedPlate == plate.id
                                     ? BoxDecoration(
