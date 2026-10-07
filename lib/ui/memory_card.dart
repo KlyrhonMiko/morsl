@@ -8,6 +8,7 @@ import '../data/models.dart';
 import 'theme.dart';
 import 'cutout_status.dart';
 import 'plate_layout.dart';
+import 'cutout_image.dart';
 
 class MemoryCanvas extends StatefulWidget {
   const MemoryCanvas({
@@ -62,6 +63,8 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                 style: TextStyle(fontSize: 11, color: Palette.muted),
               ),
             )
+          : cutout
+          ? CutoutImage(path: photo, cacheWidth: preview ? 700 : null)
           : Image(
               image: ResizeImage.resizeIfNeeded(
                 preview ? 700 : null,
@@ -166,17 +169,9 @@ class _MemoryCanvasState extends State<MemoryCanvas> {
                                         borderRadius: BorderRadius.circular(8),
                                       )
                                     : null,
-                                child: Image(
-                                  image: ResizeImage.resizeIfNeeded(
-                                    preview ? 700 : null,
-                                    null,
-                                    mediaImage(plate.path),
-                                  ),
-                                  fit: BoxFit.contain,
-
-                                  errorBuilder: (c, e, s) => const Center(
-                                    child: Icon(Icons.restaurant_outlined),
-                                  ),
+                                child: CutoutImage(
+                                  path: plate.path,
+                                  cacheWidth: preview ? 700 : null,
                                 ),
                               ),
                             ),

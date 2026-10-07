@@ -215,16 +215,24 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                       _bottomItem(1, Icons.map_outlined, 'Map'),
                       _bottomItem(2, Icons.inbox_outlined, 'Drafts'),
                       Expanded(
-                        child: IconButton.filled(
-                          onPressed: capture,
-                          tooltip: 'Capture a meal',
-                          style: IconButton.styleFrom(
-                            backgroundColor: Palette.terracotta,
-                            minimumSize: const Size(48, 48),
-                          ),
-                          icon: const Icon(
-                            Icons.add_a_photo_outlined,
-                            size: 23,
+                        child: Center(
+                          heightFactor: 1,
+                          child: SizedBox.square(
+                            dimension: 52,
+                            child: IconButton.filled(
+                              onPressed: capture,
+                              tooltip: 'Capture a meal',
+                              style: IconButton.styleFrom(
+                                backgroundColor: Palette.terracotta,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.all(14),
+                                shape: const CircleBorder(),
+                              ),
+                              icon: const Icon(
+                                Icons.camera_alt_outlined,
+                                size: 24,
+                              ),
+                            ),
                           ),
                         ),
                       ),

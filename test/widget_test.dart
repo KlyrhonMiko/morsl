@@ -952,6 +952,15 @@ void main() {
         });
         await tester.pumpAndSettle();
         expect(tester.takeException(), isNull);
+        if (size.width < 1000) {
+          final capture = find.byTooltip('Capture a meal');
+          expect(tester.getCenter(capture).dy, greaterThan(size.height - 120));
+          expect(tester.getSize(capture), const Size(52, 52));
+          expect(
+            tester.getRect(find.text('Your plate library')).bottom,
+            lessThan(tester.getRect(capture).top),
+          );
+        }
         final boundary =
             key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
         await tester.runAsync(() async {

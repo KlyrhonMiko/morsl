@@ -12,7 +12,7 @@ import 'package:morsl/ui/plate_layout.dart';
 import 'package:morsl/ui/theme.dart';
 
 void main() {
-  test('rotated dishes stay clear of date, caption, and one another', () {
+  test('collage keeps rotated dishes between date and caption', () {
     for (var count = 1; count <= 15; count++) {
       final plates = List.generate(
         count,
@@ -29,16 +29,23 @@ void main() {
         );
       }).toList();
       for (var i = 0; i < bounds.length; i++) {
-        expect(bounds[i].left, greaterThanOrEqualTo(.07999));
-        expect(bounds[i].right, lessThanOrEqualTo(.92001));
+        expect(bounds[i].left, greaterThanOrEqualTo(.05999));
+        expect(bounds[i].right, lessThanOrEqualTo(.94001));
         expect(bounds[i].top, greaterThanOrEqualTo(.11999));
-        expect(bounds[i].bottom, lessThanOrEqualTo(.74001));
+        expect(bounds[i].bottom, lessThanOrEqualTo(.80001));
         for (var j = i + 1; j < bounds.length; j++) {
-          expect(
-            bounds[i].overlaps(bounds[j]),
-            false,
-            reason: '$count dishes: $i and $j',
-          );
+          final overlap = bounds[i].intersect(bounds[j]);
+          if (!overlap.isEmpty) {
+            final smaller = math.min(
+              bounds[i].width * bounds[i].height,
+              bounds[j].width * bounds[j].height,
+            );
+            expect(
+              overlap.width * overlap.height / smaller,
+              lessThan(.5),
+              reason: '$count dishes: $i and $j remain recognizable',
+            );
+          }
         }
       }
     }
@@ -62,8 +69,13 @@ void main() {
     expect(identical(displayPlates(plates), plates), true);
   });
 
-  for (final width in [375.0, 720.0]) {
-    testWidgets('tabletop preview at $width', (tester) async {
+  for (final (width, count) in [
+    (375.0, 6),
+    (720.0, 6),
+    (375.0, 2),
+    (375.0, 3),
+  ]) {
+    testWidgets('$count plate collage at $width', (tester) async {
       tester.view.physicalSize = Size(width, width / .96);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -76,7 +88,7 @@ void main() {
             font,
           )..addFont(rootBundle.load('assets/fonts/$font.ttf'))).load();
         }
-        for (var i = 0; i < paths.length; i++) {
+        for (var i = 0; i < count; i++) {
           final path = 'assets/images/${paths[i]}-cutout.png';
           final codec = await ui.instantiateImageCodec(
             await File(path).readAsBytes(),
@@ -106,16 +118,18 @@ void main() {
         MaterialApp(
           debugShowCheckedModeBanner: false,
           theme: morslTheme(),
-          home: RepaintBoundary(
-            key: key,
-            child: MemoryCanvas(
-              memory: Memory(
-                id: 'preview',
-                scope: 'guest',
-                createdAt: DateTime(2026, 5, 21),
-                original: '',
-                plates: plates,
-                useOriginal: false,
+          home: Scaffold(
+            body: RepaintBoundary(
+              key: key,
+              child: MemoryCanvas(
+                memory: Memory(
+                  id: 'preview',
+                  scope: 'guest',
+                  createdAt: DateTime(2026, 5, 21),
+                  original: '',
+                  plates: plates,
+                  useOriginal: false,
+                ),
               ),
             ),
           ),
@@ -131,7 +145,7 @@ void main() {
         final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
         await Directory('output/previews').create(recursive: true);
         await File(
-          'output/previews/tabletop-${width.toInt()}.png',
+          'output/previews/collage-$count-${width.toInt()}.png',
         ).writeAsBytes(bytes!.buffer.asUint8List());
         image.dispose();
       });

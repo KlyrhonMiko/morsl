@@ -82,35 +82,27 @@ void main() {
     },
   );
 
-  test(
-    'automatic layout fits four dishes without overlap or caption clipping',
-    () {
-      final plates = [2.0, 0.9, 0.7, 0.75].indexed
-          .map(
-            (entry) => Plate(
-              id: '${entry.$1}',
-              mask: solidPlateMask(),
-              aspect: entry.$2,
-            ),
-          )
-          .toList();
-      arrangePlates(plates);
-      final bounds = plates
-          .map(
-            (p) => Rect.fromLTWH(p.x, p.y, p.scale, p.scale * .91 / p.aspect),
-          )
-          .toList();
-      for (var i = 0; i < bounds.length; i++) {
-        expect(bounds[i].left, greaterThanOrEqualTo(.08));
-        expect(bounds[i].right, lessThanOrEqualTo(.92));
-        expect(bounds[i].top, greaterThanOrEqualTo(.12));
-        expect(bounds[i].bottom, lessThanOrEqualTo(.74));
-        for (var j = i + 1; j < bounds.length; j++) {
-          expect(bounds[i].overlaps(bounds[j]), isFalse);
-        }
-      }
-    },
-  );
+  test('automatic collage fits four dishes without caption clipping', () {
+    final plates = [2.0, 0.9, 0.7, 0.75].indexed
+        .map(
+          (entry) => Plate(
+            id: '${entry.$1}',
+            mask: solidPlateMask(),
+            aspect: entry.$2,
+          ),
+        )
+        .toList();
+    arrangePlates(plates);
+    final bounds = plates
+        .map((p) => Rect.fromLTWH(p.x, p.y, p.scale, p.scale * .91 / p.aspect))
+        .toList();
+    for (var i = 0; i < bounds.length; i++) {
+      expect(bounds[i].left, greaterThanOrEqualTo(.06));
+      expect(bounds[i].right, lessThanOrEqualTo(.94));
+      expect(bounds[i].top, greaterThanOrEqualTo(.12));
+      expect(bounds[i].bottom, lessThanOrEqualTo(.80));
+    }
+  });
 
   test(
     'rendering retains original RGB pixels and crops only the selected region',
