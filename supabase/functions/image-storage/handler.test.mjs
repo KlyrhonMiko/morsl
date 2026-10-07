@@ -18,6 +18,8 @@ function setup(overrides = {}) {
       return "https://private.example/signed";
     },
     cleanup: async () => {},
+    reserve: async () => "reserved",
+    confirm: async () => {},
     ...overrides,
   });
   const request = (body) =>
@@ -59,6 +61,52 @@ test("signed image reads require authentication, membership and current referenc
     200,
   );
   assert.equal(ok.signed[0][0], "GET");
+});
+
+test("full budget issues no PUT URL and verification requires upload permission", async () => {
+  const { request, signed } = setup({ reserve: async () => "full" });
+  const full = await request({ action: "upload", key: original, size: 100 });
+  assert.equal(full.status, 507);
+  assert.equal((await full.json()).code, "storage_full");
+  assert.equal(signed.length, 0);
+  let confirms = 0;
+  const other = setup({
+    mealForUser: async () => ({ creator: B }),
+    confirm: async () => {
+      confirms++;
+    },
+  });
+  assert.equal(
+    (await other.request({ action: "confirm", key: original, size: 100 }))
+      .status,
+    403,
+  );
+  assert.equal(confirms, 0);
+});
+
+test("failed reservation denies signing; confirmation failure never reports success", async () => {
+  const failed = setup({
+    reserve: async () => {
+      throw new Error("database offline");
+    },
+  });
+  assert.equal(
+    (await failed.request({ action: "upload", key: original, size: 100 }))
+      .status,
+    503,
+  );
+  assert.equal(failed.signed.length, 0);
+  const verify = setup({
+    confirm: async () => {
+      throw new Error("wrong size");
+    },
+  });
+  assert.equal(
+    (await verify.request({ action: "confirm", key: original, size: 100 }))
+      .status,
+    503,
+  );
+  assert.equal(verify.signed.length, 0);
 });
 test("members can upload their own cutouts but cannot upload original photos or another member cutouts", async () => {
   const { request, signed } = setup({

@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2.117.2";
 import { aws, endpoint, env, objectUrl, sign } from "./r2.ts";
 import { createImageHandler, referencedKeys } from "./handler.mjs";
+import { createQuotaStorage } from "./quota.mjs";
 
 const userClient = (token: string) =>
   createClient(env("SUPABASE_URL"), env("SUPABASE_ANON_KEY"), {
@@ -14,6 +15,19 @@ const admin = () =>
 const decodeXml = (value: string) =>
   value.replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">")
     .replaceAll("&quot;", '"').replaceAll("&apos;", "'");
+
+const quota = async (name: string, params: Record<string, unknown>) => {
+  const { data, error } = await admin().rpc(name, params);
+  if (error) throw error; // Missing migration or database failures deny uploads.
+  return data;
+};
+
+const storage = createQuotaStorage({
+  rpc: quota,
+  fetchObject: (key: string, method: string) =>
+    aws().fetch(objectUrl(key), { method }),
+});
+const deleteTracked = storage.remove;
 
 Deno.serve(createImageHandler({
   authenticate: async (token: string) => {
@@ -40,6 +54,8 @@ Deno.serve(createImageHandler({
     return referencedKeys(asset, memories ?? []);
   },
   sign,
+  reserve: storage.reserve,
+  confirm: storage.confirm,
   cleanup: async (token: string, user: string, meal: string) => {
     const cleanupMeal = async (meal: string) => {
       // Administrative reads also cover soft-deleted meals. Creator check is mandatory.
@@ -90,16 +106,32 @@ Deno.serve(createImageHandler({
             key.startsWith(`${meal}/`) && !refs.has(key) &&
             (purge || modified < Date.now() - 86400000)
           ) {
-            const removed = await aws().fetch(objectUrl(key), {
-              method: "DELETE",
-            });
-            if (!removed.ok) throw new Error("Cleanup failed");
+            await deleteTracked(key);
           }
         }
         const next = /<NextContinuationToken>(.*?)<\/NextContinuationToken>/
           .exec(xml)?.[1];
         continuation = next ? decodeXml(next) : undefined;
       } while (continuation);
+      // R2 listing omits reservations whose PUT never completed. DELETE is
+      // idempotent for missing objects, but quota is freed only on its success.
+      let after = "";
+      for (;;) {
+        const { data: pending, error: pendingError } = await client.from(
+          "image_storage_objects",
+        )
+          .select("key,confirmed,deleting").eq("meal_id", meal)
+          .lt("grant_until", new Date(Date.now() - 86400000).toISOString())
+          .gt("key", after).order("key").limit(100);
+        if (pendingError) throw pendingError;
+        for (const row of pending ?? []) {
+          if (!refs.has(row.key) && (purge || !row.confirmed || row.deleting)) {
+            await deleteTracked(row.key);
+          }
+          after = row.key;
+        }
+        if ((pending?.length ?? 0) < 100) break;
+      }
     };
     if (meal) {
       await cleanupMeal(meal);

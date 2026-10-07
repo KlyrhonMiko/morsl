@@ -259,14 +259,32 @@ class CloudService {
   Future<String> _imageUrl(String action, String path, {int? size}) async {
     requireGoogleAccount();
     final requestedBy = account;
-    final response = await client!.functions.invoke(
-      'image-storage',
-      body: {'action': action, 'key': path, 'size': ?size},
-    );
+    final response = await _imageRequest(action, path, size: size);
     final url = response.data['url'] as String?;
     if (requestedBy != account) throw StateError('Account changed.');
     if (url == null) throw StateError('Image storage is unavailable.');
     return url;
+  }
+
+  Future<FunctionResponse> _imageRequest(
+    String action,
+    String path, {
+    int? size,
+  }) async {
+    requireGoogleAccount();
+    try {
+      return await client!.functions.invoke(
+        'image-storage',
+        body: {'action': action, 'key': path, 'size': ?size},
+      );
+    } on FunctionException catch (error) {
+      if (error.details is Map && error.details['code'] == 'storage_full') {
+        throw StateError(
+          'Cloud storage is full. Your photo is saved on this device.',
+        );
+      }
+      rethrow;
+    }
   }
 
   Future<Uint8List> downloadImage(String path) async {
@@ -283,6 +301,7 @@ class CloudService {
   }
 
   Future<void> uploadImage(String path, Uint8List bytes) async {
+    final uploadAccount = account;
     final url = await _imageUrl('upload', path, size: bytes.length);
     final response =
         await (_imageClient?.put(
@@ -301,6 +320,14 @@ class CloudService {
         'Photo upload failed. Your local copy is safe; try syncing again.',
       );
     }
+    if (uploadAccount != account) throw StateError('Account changed.');
+    final confirmed = await _imageRequest('confirm', path, size: bytes.length);
+    if (confirmed.data['ok'] != true) {
+      throw StateError(
+        'Photo backup could not be verified. Your local copy is safe.',
+      );
+    }
+    if (uploadAccount != account) throw StateError('Account changed.');
   }
 
   static String imageContentType(String path) =>

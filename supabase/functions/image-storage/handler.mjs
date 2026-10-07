@@ -12,7 +12,15 @@ const types = {
 };
 
 export function createImageHandler(
-  { authenticate, mealForUser, referencesForUser, sign, cleanup },
+  {
+    authenticate,
+    mealForUser,
+    referencesForUser,
+    sign,
+    cleanup,
+    reserve,
+    confirm,
+  },
 ) {
   const json = (body, status = 200) =>
     Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -48,7 +56,7 @@ export function createImageHandler(
         return json({ ok: true });
       }
       const match = typeof body?.key === "string" && keyPattern.exec(body.key);
-      if (!match || !["upload", "download"].includes(body.action)) {
+      if (!match || !["upload", "confirm", "download"].includes(body.action)) {
         return json({ error: "Invalid image request" }, 400);
       }
       const [, mealId, folder, kind, , extension] = match;
@@ -56,7 +64,7 @@ export function createImageHandler(
       if (!meal || meal.deleted_at) {
         return json({ error: "Image unavailable" }, 403);
       }
-      if (body.action === "upload") {
+      if (body.action !== "download") {
         if (
           !Number.isInteger(body.size) || body.size <= 0 ||
           body.size > 20 * 1024 * 1024
@@ -69,6 +77,20 @@ export function createImageHandler(
             : meal.creator !== user.id
         ) {
           return json({ error: "Upload not allowed" }, 403);
+        }
+        if (body.action === "confirm") {
+          await confirm(body.key, body.size);
+          return json({ ok: true });
+        }
+        const reservation = await reserve(body.key, body.size);
+        if (reservation === "full") {
+          return json({
+            code: "storage_full",
+            error: "Cloud storage is full. Your photo is saved on this device.",
+          }, 507);
+        }
+        if (reservation !== "reserved") {
+          throw new Error("Reservation unavailable");
         }
       } else {
         if (kind === "plate" && folder !== user.id) {

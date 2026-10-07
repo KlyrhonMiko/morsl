@@ -107,6 +107,10 @@ void main() {
           if (request.url.path.endsWith('image-storage')) {
             final body = jsonDecode(request.body);
             expect(body['size'], 3);
+            if (body['action'] == 'confirm') {
+              calls.add('verified');
+              return json({'ok': true});
+            }
             return json({'url': 'https://r2.example/${body['key']}'});
           }
           calls.add('commit');
@@ -131,7 +135,14 @@ void main() {
             plates: [Plate(id: 'plate', mask: 'mask', path: plateFile.path)],
           ),
         );
-        expect(calls, ['reserve', 'original', 'plate', 'commit']);
+        expect(calls, [
+          'reserve',
+          'original',
+          'verified',
+          'plate',
+          'verified',
+          'commit',
+        ]);
         expect(saved!['original'], startsWith('$id/$id/r2/original-'));
         expect(saved!['plates'][0]['cloudPath'], contains('/r2/plate-'));
         expect(saved!['plates'][0].containsKey('path'), false);
@@ -233,4 +244,73 @@ void main() {
       await client.dispose();
     },
   );
+
+  for (final failure in ['quota', 'verification']) {
+    test(
+      '$failure failure preserves the local photo and prevents commit',
+      () async {
+        final root = await Directory.systemTemp.createTemp('morsl-quota-');
+        final source = await File(
+          '${root.path}/original.jpg',
+        ).writeAsBytes([1, 2, 3]);
+        var commits = 0;
+        var puts = 0;
+        final client = SupabaseClient(
+          'https://supabase.example',
+          'test-key',
+          httpClient: requestClient((request) async {
+            if (request.url.path.endsWith('reserve_meal')) return json(null);
+            if (request.url.path.endsWith('image-storage')) {
+              final body = jsonDecode(request.body);
+              if (failure == 'quota') {
+                return http.Response(
+                  jsonEncode({'code': 'storage_full'}),
+                  507,
+                  headers: {'content-type': 'application/json'},
+                );
+              }
+              if (body['action'] == 'confirm') return json({'ok': false});
+              return json({'url': 'https://r2.example/upload'});
+            }
+            commits++;
+            return json({});
+          }),
+        );
+        final images = MockClient((request) async {
+          puts++;
+          return http.Response('', 200);
+        });
+        final cloud = GoogleCloud(client, MediaStore(), imageClient: images);
+        try {
+          await expectLater(
+            cloud.push(
+              Memory(
+                id: id,
+                scope: cloud.account,
+                creator: cloud.account,
+                createdAt: DateTime(2026),
+                original: source.path,
+              ),
+            ),
+            throwsA(
+              isA<StateError>().having(
+                (e) => e.message,
+                'message',
+                contains(
+                  failure == 'quota' ? 'Cloud storage is full' : 'verified',
+                ),
+              ),
+            ),
+          );
+          expect(commits, 0);
+          expect(puts, failure == 'quota' ? 0 : 1);
+          expect(await source.readAsBytes(), [1, 2, 3]);
+        } finally {
+          images.close();
+          await client.dispose();
+          await root.delete(recursive: true);
+        }
+      },
+    );
+  }
 }

@@ -8,7 +8,7 @@ need to retain.
 
 ## Activate storage
 
-1. Create a private **Standard** R2 bucket (for example `morsl-images`). Keep public
+1. Create an **empty**, private **Standard** R2 bucket (for example `morsl-images`). Keep public
    access disabled. Create an R2 S3 API token with Object Read & Write permission
    restricted to that bucket.
 2. In the Supabase project's Edge Function secrets, add these server-only values:
@@ -25,10 +25,9 @@ need to retain.
    API token. Supabase provides `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and
    `SUPABASE_SERVICE_ROLE_KEY` to the deployed function automatically. Never put
    R2 keys or the service-role key in the Flutter app or `config.local.json`.
-3. Apply the project's existing meal-schema migration to the fresh Supabase
-   database and configure Google sign-in as described in README.md. No new database
-   migration is required: R2 object keys occupy existing image reference fields;
-   each plate's `cloudPath` is stored in its existing JSON data.
+3. Apply both migrations to the fresh Supabase database: the meal schema and
+   `20261007012718_image_storage_quota.sql`. Configure Google sign-in as described
+   in README.md. The quota migration is required before any upload can be signed.
 4. Deploy the endpoint from this project directory:
 
    ```powershell
@@ -52,6 +51,13 @@ need to retain.
   their object keys to Supabase. Cutouts are at most 1600 pixels on their longest
   edge and use lossless PNG compression with transparency preserved. Uploads are
   limited to 20 MiB each.
+- The server enforces **9 GB (9,000,000,000 bytes) globally**, including uploaded
+  objects and pending reservations across every account. Allocation locks one
+  database budget row, so simultaneous uploads cannot each consume the same free
+  space. Retries of the same object key/size reuse their reservation. The server
+  verifies R2's actual object size before the app commits a backup. At capacity,
+  new uploads stop with “Cloud storage is full”; local photos remain saved and
+  queued for retry. Reading existing backups continues.
 - Restoring retrieves metadata and stable object references, with **no image
   downloads and no cutout regeneration**. After a successful committed restore,
   backed-up document files are removed only when no pending edit/job or active
@@ -74,9 +80,29 @@ need to retain.
 - Owner cleanup runs at most daily during sync, preserving all members' referenced
   cutouts and allowing 24 hours for uncommitted uploads. Photo removal and meal
   deletion also request cleanup immediately; daily cleanup retries failures.
+  Quota stays charged until R2 acknowledges deletion, and cleanup waits at least
+  24 hours after the last upload grant expires. Missing objects from abandoned
+  uploads are also deleted idempotently before releasing their reservation.
+  A failed delete retains its reservation. Cleanup blocks new grants for an
+  object while deleting it. A crashed cleanup can leave a charged `deleting`
+  entry: investigate the function logs and ensure the old invocation has ended
+  before resetting that flag with a service/admin connection and retrying cleanup.
+
+To inspect the shared budget in the Supabase SQL editor:
+
+```sql
+select used_bytes, 9000000000 - used_bytes as available_bytes
+from public.image_storage_budget;
+```
+
+These tables and quota functions are service-only; devices cannot change the
+budget. Use this bucket exclusively through the endpoint. Manual uploads, other
+buckets, and other writers bypass this app's ledger. Do not clear the ledger or
+reset its counter while objects remain in R2.
 
 The free R2 allowance is shared across the entire app, not per user. Monitor storage
-and operation usage in Cloudflare; additional storage/operations can incur charges.
+and operation usage in Cloudflare; the 9 GB cap limits app storage, but does not
+cap billable read/write operations or guarantee a zero bill for the account.
 Cleanup runs when an owner syncs, so an inactive owner does not trigger daily cleanup.
 
 ## Verify before release
