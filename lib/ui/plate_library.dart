@@ -426,6 +426,8 @@ class _PlateDetailsState extends State<PlateDetails> {
   late final TextEditingController name, note;
   int? stars;
   bool saving = false;
+  bool deleting = false;
+  bool get busy => saving || deleting;
   @override
   void initState() {
     super.initState();
@@ -449,7 +451,49 @@ class _PlateDetailsState extends State<PlateDetails> {
 
   bool get canEdit =>
       widget.app.canMutate && widget.app.scope == widget.plate.memory.scope;
+  Future<void> _delete() async {
+    if (!canEdit || busy) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete this plate?'),
+        content: Text(
+          'Remove ${widget.plate.title} and its rating and note from your library? '
+          'Your meal, original photos, and other plates will stay. '
+          'This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete plate'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted || !canEdit || busy) return;
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => deleting = true);
+    try {
+      await widget.app.deletePlate(widget.plate);
+      if (!mounted || !canEdit) return;
+      navigator.pop();
+      messenger.showSnackBar(const SnackBar(content: Text('Plate deleted.')));
+    } catch (_) {
+      if (mounted) {
+        message(context, 'Could not delete this plate. Please try again.');
+      }
+    } finally {
+      if (mounted) setState(() => deleting = false);
+    }
+  }
+
   Future<void> _save() async {
+    if (!canEdit || busy) return;
     setState(() => saving = true);
     try {
       widget.app.requireGoogleAccount(widget.plate.memory);
@@ -509,7 +553,17 @@ class _PlateDetailsState extends State<PlateDetails> {
             .firstOrNull ??
         widget.plate.memory;
     return Scaffold(
-      appBar: AppBar(title: const Text('Plate details')),
+      appBar: AppBar(
+        title: const Text('Plate details'),
+        actions: [
+          if (canEdit)
+            IconButton(
+              tooltip: 'Delete plate',
+              onPressed: busy ? null : _delete,
+              icon: const Icon(Icons.delete_outline),
+            ),
+        ],
+      ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Center(
@@ -538,14 +592,14 @@ class _PlateDetailsState extends State<PlateDetails> {
                 if (memory.companions.isNotEmpty)
                   Text('With ${memory.companions.join(', ')}'),
                 TextButton.icon(
-                  onPressed: () => widget.onMealDetails(memory),
+                  onPressed: busy ? null : () => widget.onMealDetails(memory),
                   icon: const Icon(Icons.edit_outlined, size: 18),
                   label: const Text('Meal details'),
                 ),
                 const SizedBox(height: 20),
                 TextField(
                   controller: name,
-                  readOnly: !canEdit || saving,
+                  readOnly: !canEdit || busy,
                   maxLength: 80,
                   decoration: const InputDecoration(
                     labelText: 'Plate name',
@@ -563,7 +617,7 @@ class _PlateDetailsState extends State<PlateDetails> {
                       IconButton(
                         tooltip: '$value ${value == 1 ? 'star' : 'stars'}',
                         isSelected: stars == value,
-                        onPressed: !canEdit || saving
+                        onPressed: !canEdit || busy
                             ? null
                             : () => setState(() => stars = value),
                         icon: Icon(
@@ -576,7 +630,7 @@ class _PlateDetailsState extends State<PlateDetails> {
                       ),
                     if (stars != null)
                       TextButton(
-                        onPressed: !canEdit || saving
+                        onPressed: !canEdit || busy
                             ? null
                             : () => setState(() => stars = null),
                         child: const Text('Clear'),
@@ -586,7 +640,7 @@ class _PlateDetailsState extends State<PlateDetails> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: note,
-                  readOnly: !canEdit || saving,
+                  readOnly: !canEdit || busy,
                   maxLines: 3,
                   maxLength: 1000,
                   decoration: const InputDecoration(
@@ -597,8 +651,14 @@ class _PlateDetailsState extends State<PlateDetails> {
                 const SizedBox(height: 20),
                 if (canEdit)
                   FilledButton(
-                    onPressed: saving ? null : _save,
-                    child: Text(saving ? 'Saving…' : 'Save plate'),
+                    onPressed: busy ? null : _save,
+                    child: Text(
+                      deleting
+                          ? 'Deleting plate…'
+                          : saving
+                          ? 'Saving…'
+                          : 'Save plate',
+                    ),
                   ),
               ],
             ),

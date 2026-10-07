@@ -70,6 +70,7 @@ Future<void> showCapture(
   void Function(Memory) onOpen, {
   LocationAccessService locationAccess = const LocationAccessService(),
 }) async {
+  if (app.isCapturing) return;
   if (!await requireGoogleSignIn(context, app) || !context.mounted) return;
   await ensureLocationAccess(context, service: locationAccess);
   if (!context.mounted || !app.canMutate) return;
@@ -79,15 +80,35 @@ Future<void> showCapture(
     showDragHandle: true,
     builder: (c) => const CaptureSheet(),
   );
-  if (choice == null || !context.mounted) {
+  if (choice == null || !context.mounted || app.isCapturing) {
     return;
   }
   await guarded(context, () async {
-    final m = await app.capture(
-      choice.$1,
-      locate: choice.$2 && choice.$1 == ImageSource.camera,
+    final progress = ValueNotifier<(int, int)?>(null);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.removeCurrentSnackBar();
+    final feedback = messenger.showSnackBar(
+      SnackBar(
+        duration: const Duration(days: 1),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Palette.forest,
+        dismissDirection: DismissDirection.none,
+        content: PhotoImportFeedback(progress: progress),
+      ),
     );
+    final Memory? m;
+    try {
+      m = await app.capture(
+        choice.$1,
+        locate: choice.$2 && choice.$1 == ImageSource.camera,
+        onImportProgress: (saved, total) => progress.value = (saved, total),
+      );
+    } finally {
+      feedback.close();
+      unawaited(feedback.closed.then((_) => progress.dispose()));
+    }
     if (m != null && context.mounted) {
+      final savedMemory = m;
       app.navigate(2);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -97,9 +118,9 @@ Future<void> showCapture(
           action: SnackBarAction(
             label: 'Edit now',
             onPressed: () {
-              if (!context.mounted || app.scope != m.scope) return;
+              if (!context.mounted || app.scope != savedMemory.scope) return;
               final current = app.memories
-                  .where((memory) => memory.id == m.id)
+                  .where((memory) => memory.id == savedMemory.id)
                   .firstOrNull;
               if (current != null) onOpen(current);
             },
@@ -108,6 +129,49 @@ Future<void> showCapture(
       );
     }
   });
+}
+
+class PhotoImportFeedback extends StatelessWidget {
+  const PhotoImportFeedback({super.key, required this.progress});
+
+  final ValueNotifier<(int, int)?> progress;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<(int, int)?>(
+    valueListenable: progress,
+    builder: (context, value, _) {
+      final saved = value?.$1 ?? 0;
+      final total = value?.$2;
+      final savingDraft = total != null && saved == total;
+      return Semantics(
+        liveRegion: true,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              total == null
+                  ? 'Preparing photos…'
+                  : savingDraft
+                  ? 'Saving your draft…'
+                  : 'Importing ${total == 1 ? 'photo' : '$total photos'}…',
+            ),
+            if (total != null) ...[
+              const SizedBox(height: 4),
+              Text('$saved of $total ${total == 1 ? 'photo' : 'photos'} saved'),
+            ],
+            const SizedBox(height: 8),
+            LinearProgressIndicator(
+              value: total == null || savingDraft ? null : saved / total,
+              color: Palette.paper,
+              backgroundColor: Palette.paper.withValues(alpha: .2),
+              semanticsLabel: 'Photo import progress',
+            ),
+          ],
+        ),
+      );
+    },
+  );
 }
 
 class CaptureSheet extends StatefulWidget {

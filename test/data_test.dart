@@ -60,6 +60,17 @@ class FakeRemoteEngine extends FakeEngine implements RemoteSegmentationEngine {
   bool uploadsAllowed = false;
 }
 
+class BatchPlateEngine extends FakePlateEngine {
+  final calls = <String>[];
+  bool failFirst = true;
+  @override
+  Future<List<Plate>> subjects(String original, String directory, {Plate? region}) async {
+    calls.add(original);
+    if (failFirst && original == calls.first) throw StateError('Temporary service failure');
+    return super.subjects(original, directory, region: region);
+  }
+}
+
 class TestMedia extends MediaStore {
   TestMedia(this.root)
     : super(cache: ImageDiskCache(root: Directory('${root.path}/image-cache')));
@@ -230,10 +241,12 @@ void main() {
       await second.writeAsBytes(img.encodePng(img.Image(width: 8, height: 8)));
       final app = controller(FakePlateEngine(), TestGoogleCloud(null, media));
       app.active = false;
+      final progress = <(int, int)>[];
       final memory = await app.importPhotos([
         XFile(first.path),
         XFile(second.path),
-      ]);
+      ], onProgress: (saved, total) => progress.add((saved, total)));
+      expect(progress, [(0, 2), (1, 2), (2, 2)]);
       expect(await repo.list('guest'), hasLength(1));
       final saved = (await repo.list('guest')).single;
       expect(saved.originals, hasLength(2));
@@ -259,6 +272,42 @@ void main() {
         processed.copy().sourceFor(processed.plates.last),
         processed.photos.single.original,
       );
+      app.dispose();
+    },
+  );
+
+  test(
+    'seven-photo batch retains a failed first photo and retries only that source',
+    () async {
+      final inputs = <XFile>[];
+      for (var index = 0; index < 7; index++) {
+        final file = File('${temp.path}/batch-$index.png');
+        await file.writeAsBytes(img.encodePng(img.Image(width: 4, height: 4)));
+        inputs.add(XFile(file.path));
+      }
+      final engine = BatchPlateEngine();
+      final app = controller(engine, TestGoogleCloud(null, media));
+      app.active = false;
+      await app.importPhotos(inputs);
+      app.active = true;
+      await app.processQueue();
+      var saved = (await repo.list('guest')).single;
+      expect(saved.job, JobStatus.failed);
+      expect(saved.originalProcessed, false);
+      expect(saved.error, contains('Temporary service failure'));
+      expect(saved.photos.every((p) => p.job == JobStatus.ready), true);
+      expect(saved.plates, hasLength(6));
+      expect(engine.calls, hasLength(7));
+      engine.failFirst = false;
+      await app.retry(saved);
+      saved = (await repo.list('guest')).single;
+      expect(saved.job, JobStatus.ready);
+      expect(saved.originalProcessed, true);
+      expect(saved.error, isNull);
+      expect(saved.plates, hasLength(7));
+      expect(saved.plates.map((p) => p.id).toSet(), hasLength(7));
+      expect(engine.calls, hasLength(8));
+      expect(engine.calls.last, saved.original);
       app.dispose();
     },
   );

@@ -100,6 +100,77 @@ void main() {
     expect(plates.single.height, .4);
   });
 
+  test('busy response retries once after server cooldown', () async {
+    var sends = 0;
+    final waits = <Duration>[];
+    final cloud = CloudSegmentation(
+      accessToken: () => 'session',
+      waitBeforeRetry: (delay) async {
+        waits.add(delay);
+      },
+      clientFactory: () => MockClient((request) async {
+        expect(request.headers['Authorization'], 'Bearer session');
+        sends++;
+        if (sends == 1) {
+          return http.Response('busy', 429, headers: {'retry-after': '60'});
+        }
+        return http.Response(jsonEncode(fixture), 200);
+      }),
+    )..uploadsAllowed = true;
+    expect(await cloud.subjects(original, directory.path), hasLength(1));
+    expect(sends, 2);
+    expect(waits, [const Duration(seconds: 60)]);
+  });
+
+  test(
+    'busy retry is bounded and respects upload opt-out while waiting',
+    () async {
+      for (final optOut in [false, true]) {
+        var sends = 0;
+        late CloudSegmentation cloud;
+        cloud = CloudSegmentation(
+          accessToken: () => 'session',
+          waitBeforeRetry: (_) async {
+            if (optOut) cloud.uploadsAllowed = false;
+          },
+          clientFactory: () => MockClient((_) async {
+            sends++;
+            return http.Response('busy', 429, headers: {'retry-after': '5'});
+          }),
+        )..uploadsAllowed = true;
+        await expectLater(
+          cloud.subjects(original, directory.path),
+          throwsStateError,
+        );
+        expect(sends, optOut ? 1 : 2);
+      }
+    },
+  );
+
+  test(
+    'inference failures do not automatically submit duplicate GPU work',
+    () async {
+      for (final status in [401, 403, 413, 503, 504]) {
+        var sends = 0;
+        final cloud = CloudSegmentation(
+          accessToken: () => 'session',
+          waitBeforeRetry: (_) async {
+            fail('Unexpected retry');
+          },
+          clientFactory: () => MockClient((_) async {
+            sends++;
+            return http.Response('failed', status);
+          }),
+        )..uploadsAllowed = true;
+        await expectLater(
+          cloud.subjects(original, directory.path),
+          throwsStateError,
+        );
+        expect(sends, 1);
+      }
+    },
+  );
+
   test('no upload occurs before consent or without a session', () async {
     var sends = 0;
     final cloud = CloudSegmentation(

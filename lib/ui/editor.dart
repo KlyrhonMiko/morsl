@@ -691,16 +691,6 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                   _plateControls(),
                   const SizedBox(height: 16),
                   _photoControls(),
-                  const SizedBox(height: 8),
-                  Center(
-                    child: Text(
-                      status,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: Palette.muted,
-                      ),
-                    ),
-                  ),
                 ],
               );
               final controls = _controls();
@@ -721,7 +711,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                         : Column(
                             children: [
                               preview,
-                              const SizedBox(height: 32),
+                              const SizedBox(height: 24),
                               controls,
                             ],
                           ),
@@ -743,7 +733,9 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    memory.draft
+                    status != 'All edits saved on this device'
+                        ? status
+                        : memory.draft
                         ? 'Draft saved on this device. Finish whenever you’re ready.'
                         : 'All edits saved on this device.',
                     style: const TextStyle(fontSize: 12, color: Palette.muted),
@@ -771,8 +763,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             ),
           ),
         );
-  Widget _label(String value) => Padding(
-    padding: const EdgeInsets.only(bottom: 10, top: 22),
+  Widget _label(String value, {double top = 22}) => Padding(
+    padding: EdgeInsets.only(bottom: 10, top: top),
     child: Text(
       value,
       style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
@@ -874,6 +866,14 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
         },
       ),
       const SizedBox(height: 10),
+      if (memory.job == JobStatus.failed && !memory.originalProcessed)
+        const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text(
+            'Photo 1: cutouts could not be created. Select it for manual cleanup or retry.',
+            style: TextStyle(color: Palette.terracotta, fontSize: 12),
+          ),
+        ),
       for (final photo in memory.photos.where((p) => p.job == JobStatus.failed))
         Padding(
           padding: const EdgeInsets.only(top: 8),
@@ -883,11 +883,24 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           ),
         ),
       if (memory.ownsMeal)
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            OutlinedButton.icon(
+        TextButtonTheme(
+          data: TextButtonThemeData(
+            style: TextButton.styleFrom(
+              foregroundColor: Palette.ink,
+              minimumSize: const Size(48, 48),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              textStyle: const TextStyle(
+                fontFamily: 'Quicksand',
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          child: Wrap(
+            spacing: 4,
+            runSpacing: 4,
+            children: [
+            TextButton.icon(
               onPressed: addingPhotos || findingPlates
                   ? null
                   : () => _addPhotos(ImageSource.gallery),
@@ -899,9 +912,10 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                   ? null
                   : () => _addPhotos(ImageSource.camera),
               icon: const Icon(Icons.camera_alt_outlined, size: 18),
-              label: const Text('Take another photo'),
+              label: const Text('Take photo'),
             ),
-            if (memory.photos.any((p) => p.job == JobStatus.failed))
+            if ((memory.job == JobStatus.failed && !memory.originalProcessed) ||
+                memory.photos.any((p) => p.job == JobStatus.failed))
               TextButton.icon(
                 onPressed: findingPlates || addingPhotos
                     ? null
@@ -913,13 +927,14 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                 label: const Text('Retry failed photos'),
               ),
           ],
+          ),
         ),
     ],
   );
   Widget _controls() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _label('A few words'),
+      _label('A few words', top: 0),
       TextField(
         controller: caption,
         maxLength: 160,

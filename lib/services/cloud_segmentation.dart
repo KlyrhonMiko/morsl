@@ -13,6 +13,12 @@ import '../data/models.dart';
 import 'plates.dart';
 import 'segmentation.dart';
 
+class _ExtractionBusy extends StateError {
+  _ExtractionBusy(this.retryAfter)
+    : super('Cloud extraction is busy. Please retry later.');
+  final Duration retryAfter;
+}
+
 class CloudSegmentation
     implements
         SegmentationEngine,
@@ -25,15 +31,19 @@ class CloudSegmentation
     ),
     http.Client Function()? clientFactory,
     String? Function()? accessToken,
+    Future<void> Function(Duration)? waitBeforeRetry,
     this.requestTimeout = const Duration(seconds: 120),
     this.healthTimeout = const Duration(seconds: 5),
   }) : endpoint = Uri.parse(endpoint),
        _clientFactory = clientFactory ?? http.Client.new,
+       _waitBeforeRetry =
+           waitBeforeRetry ?? ((delay) => Future<void>.delayed(delay)),
        _accessToken = accessToken ?? (() => null);
 
   final Uri endpoint;
   final http.Client Function() _clientFactory;
   final String? Function() _accessToken;
+  final Future<void> Function(Duration) _waitBeforeRetry;
   final Duration requestTimeout, healthTimeout;
   final Set<http.Client> _clients = {};
   bool _uploadsAllowed = false;
@@ -73,6 +83,13 @@ class CloudSegmentation
       return await (() async {
         final response = await client.send(request);
         if (response.statusCode != 200) {
+          // This service returns 429 before submitting any inference work.
+          if (response.statusCode == 429) {
+            final seconds = int.tryParse(response.headers['retry-after'] ?? '');
+            throw _ExtractionBusy(
+              Duration(seconds: seconds != null && seconds >= 0 ? seconds : 5),
+            );
+          }
           throw StateError(switch (response.statusCode) {
             401 || 403 => 'Cloud extraction access was denied.',
             413 => 'This photo is too large for cloud extraction.',
@@ -159,12 +176,30 @@ class CloudSegmentation
     if (prepared.length > 10 * 1024 * 1024) {
       throw StateError('This photo is too large for cloud extraction.');
     }
-    final request = http.MultipartRequest('POST', endpoint)
-      ..headers['Accept'] = 'application/json'
-      ..files.add(
-        http.MultipartFile.fromBytes('image', prepared, filename: 'image.png'),
-      );
-    final response = await _request(request, requestTimeout);
+    Future<Map<String, dynamic>> send() {
+      _checkUploadChoice();
+      // Multipart requests are single-use; reuse only the prepared image bytes.
+      final request = http.MultipartRequest('POST', endpoint)
+        ..headers['Accept'] = 'application/json'
+        ..files.add(
+          http.MultipartFile.fromBytes(
+            'image',
+            prepared,
+            filename: 'image.png',
+          ),
+        );
+      return _request(request, requestTimeout);
+    }
+
+    Map<String, dynamic> response;
+    try {
+      response = await send();
+    } on _ExtractionBusy catch (busy) {
+      if (busy.retryAfter > const Duration(minutes: 1)) rethrow;
+      await _waitBeforeRetry(busy.retryAfter);
+      // One retry only, and never retry timeouts or inference failures here.
+      response = await send();
+    }
     _checkUploadChoice();
     // PNG decoding and normalization must not block Flutter's UI thread.
     final rows = await compute(_decodePlates, response);

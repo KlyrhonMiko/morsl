@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -8,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:morsl/controller.dart';
 import 'package:morsl/data/database.dart';
@@ -31,6 +33,44 @@ import 'package:morsl/ui/tools.dart';
 class DisabledTestLocation extends LocationAccessService {
   @override
   Future<LocationAccessStatus> check() async => LocationAccessStatus.serviceOff;
+}
+
+class ReadyTestLocation extends LocationAccessService {
+  @override
+  Future<LocationAccessStatus> check() async => LocationAccessStatus.ready;
+}
+
+class PendingCaptureController extends MorslController {
+  PendingCaptureController(MorslController app)
+    : super(
+        repository: app.repository,
+        media: app.media,
+        engine: app.engine,
+        cloud: app.cloud,
+        reminders: app.reminders,
+      );
+
+  final result = Completer<Memory?>();
+  void Function(int, int)? progress;
+  int calls = 0;
+  bool capturing = false;
+  @override
+  bool get isCapturing => capturing;
+  @override
+  Future<Memory?> capture(
+    ImageSource source, {
+    bool locate = false,
+    void Function(int saved, int total)? onImportProgress,
+  }) async {
+    calls++;
+    capturing = true;
+    progress = onImportProgress;
+    try {
+      return await result.future;
+    } finally {
+      capturing = false;
+    }
+  }
 }
 
 class LocalTestTiles extends TileProvider {
@@ -168,6 +208,67 @@ void main() {
     overrides: [appProvider.overrideWithValue(app)],
     child: child,
   );
+
+  for (final outcome in ['cancel', 'error', 'saved']) {
+    testWidgets('capture feedback clears on $outcome and blocks duplicates', (
+      tester,
+    ) async {
+      final captureApp = PendingCaptureController(app);
+      addTearDown(captureApp.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: morslTheme(),
+          home: Scaffold(
+            body: Builder(
+              builder: (context) => TextButton(
+                onPressed: () => showCapture(
+                  context,
+                  captureApp,
+                  (_) {},
+                  locationAccess: ReadyTestLocation(),
+                ),
+                child: const Text('Import photos'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('Import photos'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Choose from photos'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('Preparing photos…'), findsOneWidget);
+      captureApp.progress!(1, 3);
+      await tester.pump();
+      expect(find.text('1 of 3 photos saved'), findsOneWidget);
+      await tester.tap(find.text('Import photos'));
+      await tester.pump();
+      expect(captureApp.calls, 1);
+      expect(find.text('Choose from photos'), findsNothing);
+
+      if (outcome == 'error') {
+        captureApp.result.completeError(StateError('Could not save photos.'));
+      } else {
+        captureApp.result.complete(
+          outcome == 'saved' ? app.memories.first : null,
+        );
+      }
+      await tester.pumpAndSettle();
+      expect(find.byType(PhotoImportFeedback), findsNothing);
+      expect(captureApp.isCapturing, false);
+      if (outcome == 'error') {
+        expect(find.text('Could not save photos.'), findsOneWidget);
+      } else if (outcome == 'saved') {
+        expect(
+          find.text('Photo saved in Drafts. Enjoy your meal.'),
+          findsOneWidget,
+        );
+        expect(captureApp.destination, 2);
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   testWidgets('editor shows processing feedback and removes it on completion', (
     tester,

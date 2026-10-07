@@ -42,6 +42,8 @@ class MorslController extends ChangeNotifier {
   int destination = 0;
   bool busySync = false, modelReady = false, reminderEnabled = false;
   bool _processing = false;
+  bool _capturing = false;
+  bool get isCapturing => _capturing;
   bool active = true;
   bool online = true;
   bool get canMutate => cloud.signedInWithGoogle && cloud.account != null;
@@ -238,6 +240,39 @@ class MorslController extends ChangeNotifier {
     await reload();
   }
 
+  Future<void> deletePlate(LibraryPlate plate) async {
+    requireGoogleAccount(plate.memory);
+    final updated = await repository.mutate(
+      plate.memory.id,
+      plate.memory.scope,
+      (current) {
+        requireGoogleAccount(current);
+        if (plate.plateId == '__cutout__') {
+          if (current.plates.isNotEmpty || current.cutout?.isNotEmpty != true) {
+            throw StateError('This plate is no longer in your library.');
+          }
+          current.cutout = null;
+        } else {
+          if (!current.plates.any((p) => p.id == plate.plateId)) {
+            throw StateError('This plate is no longer in your library.');
+          }
+          current.plates = current.plates
+              .where((p) => p.id != plate.plateId)
+              .toList();
+          // Do not expose a legacy cutout after removing the last plate.
+          if (current.plates.isEmpty) current.cutout = null;
+        }
+        current.plateReviews = {...current.plateReviews}..remove(plate.plateId);
+        current.platesEdited = true;
+        if (current.plates.isEmpty) current.useOriginal = true;
+      },
+    );
+    if (updated == null) {
+      throw StateError('This plate is no longer in your library.');
+    }
+    await reload();
+  }
+
   void navigate(int index) {
     destination = index;
     notifyListeners();
@@ -251,32 +286,43 @@ class MorslController extends ChangeNotifier {
     }
   }
 
-  Future<Memory?> capture(ImageSource source, {bool locate = false}) async {
+  Future<Memory?> capture(
+    ImageSource source, {
+    bool locate = false,
+    void Function(int saved, int total)? onImportProgress,
+  }) async {
+    if (_capturing) return null;
     requireGoogleAccount();
-    final account = scope;
-    final photos = source == ImageSource.gallery
-        ? await ImagePicker().pickMultiImage(
-            imageQuality: 100,
-            maxWidth: 2048,
-            maxHeight: 2048,
-          )
-        : [
-            ?await ImagePicker().pickImage(
-              source: source,
+    _capturing = true;
+    try {
+      final account = scope;
+      final photos = source == ImageSource.gallery
+          ? await ImagePicker().pickMultiImage(
               imageQuality: 100,
               maxWidth: 2048,
               maxHeight: 2048,
-            ),
-          ];
-    if (photos.isEmpty) {
-      return null;
+            )
+          : [
+              ?await ImagePicker().pickImage(
+                source: source,
+                imageQuality: 100,
+                maxWidth: 2048,
+                maxHeight: 2048,
+              ),
+            ];
+      if (photos.isEmpty) {
+        return null;
+      }
+      if (scope != account) throw StateError('Account changed during capture.');
+      return await importPhotos(
+        photos,
+        locate: locate,
+        readMetadata: source == ImageSource.gallery,
+        onProgress: onImportProgress,
+      );
+    } finally {
+      _capturing = false;
     }
-    if (scope != account) throw StateError('Account changed during capture.');
-    return importPhotos(
-      photos,
-      locate: locate,
-      readMetadata: source == ImageSource.gallery,
-    );
   }
 
   Future<Memory> importPhoto(
@@ -289,12 +335,16 @@ class MorslController extends ChangeNotifier {
     List<XFile> photos, {
     bool locate = false,
     bool readMetadata = false,
+    void Function(int saved, int total)? onProgress,
   }) async {
     if (photos.isEmpty) throw ArgumentError('Choose at least one photo.');
     requireGoogleAccount();
     final account = scope;
     final id = const Uuid().v4();
+    onProgress?.call(0, photos.length);
     final original = await media.preserve(photos.first, account, id);
+    var saved = 1;
+    onProgress?.call(saved, photos.length);
     final additional = <MealPhoto>[];
     for (final photo in photos.skip(1)) {
       final photoId = const Uuid().v4();
@@ -304,6 +354,7 @@ class MorslController extends ChangeNotifier {
           original: await media.preserve(photo, account, '$id/$photoId'),
         ),
       );
+      onProgress?.call(++saved, photos.length);
     }
     requireGoogleAccount();
     if (scope != account) throw StateError('Account changed during import.');
@@ -591,7 +642,8 @@ class MorslController extends ChangeNotifier {
               !current.plates.any((p) => p.photoId == null)) {
             current.plates = [...current.plates, ...plates!];
           }
-          current.originalProcessed = true;
+          current.originalProcessed =
+              current.originalProcessed || error == null;
           current.plates = [...current.plates, ...extraPlates];
           for (final photo in current.photos) {
             final result = photoResults[photo.id];
@@ -603,6 +655,8 @@ class MorslController extends ChangeNotifier {
           current.job = current.photos.any((p) => p.job == JobStatus.queued)
               ? JobStatus.queued
               : current.photos.any((p) => p.job == JobStatus.failed)
+              ? JobStatus.failed
+              : error != null
               ? JobStatus.failed
               : output != null ||
                     current.cutout != null ||

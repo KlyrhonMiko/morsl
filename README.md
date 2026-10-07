@@ -50,6 +50,12 @@ background dishes and screenshot gallery thumbnails. Very small dishes or
 irregular, overlapping outlines may still need the manual edge tools.
 New imports run this automatically. Manual cleanup afterward can refine edges
 or add a missed plate; it also provides recovery when cloud processing fails.
+Multi-photo imports process each source independently on the same segmentation
+service. A failed first photo keeps the meal in a failed state even if later
+photos succeed. Manual retry processes failed sources while retaining successful
+cutouts. Busy responses (HTTP 429, rejected before GPU inference) receive one
+automatic retry after the server's cooldown, up to 60 seconds. Timeouts and
+inference errors are left for manual retry to avoid duplicate GPU work.
 For older merged results, **Separate dishes**
 in Meal details replaces the current cutouts in one step. It can reset existing plate
 positions and edge edits, so use it when you want to regenerate them.
