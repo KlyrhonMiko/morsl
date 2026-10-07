@@ -3,174 +3,126 @@ import assert from "node:assert/strict";
 import { createVenueHandler } from "./handler.mjs";
 
 const google = { id: "account", app_metadata: { provider: "google" } };
-const request = (body = { latitude: 14.55, longitude: 121.02 }, token = "valid") =>
-  new Request("https://test/nearby-venues", {
-    method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: JSON.stringify(body),
-  });
+const request = (body = {latitude:14.55,longitude:121.02,query:"TGI Fridays Opus"}, token = "valid") =>
+  new Request("https://test/nearby-venues", {method:"POST",headers:token?{Authorization: `Bearer ${token}`}:{},body:JSON.stringify(body)});
+const venue = (id="opus", overrides={}) => ({id: `here:pds:place:${id}`,title:"TGI Friday's-Opus",resultType:"place",
+  position:{lat:14.59261,lng:121.08071},address:{label:"Opus, Quezon City"},categories:[{id:"100-1000-0001"}],...overrides});
+const create = (overrides={}) => createVenueHandler({authenticate:async()=>google,apiKey:()=>"server-key",
+  consumeSearch:async()=>({allowed:true}),...overrides});
 
-test("queries Geoapify with longitude first and normalizes provider results", async () => {
-  const handler = createVenueHandler({
-    authenticate: async (token) => { assert.equal(token, "valid"); return google; },
-    apiKey: () => "server-only-key",
-    fetchPlaces: async (url, options) => {
-      assert.equal(url.origin, "https://api.geoapify.com");
-      assert.equal(url.pathname, "/v2/places");
-      assert.equal(url.searchParams.get("filter"), "circle:121.02,14.55,2000");
-      assert.equal(url.searchParams.get("bias"), "proximity:121.02,14.55");
-      assert.equal(url.searchParams.get("categories"), "catering");
-      assert.equal(url.searchParams.get("limit"), "10");
-      assert.equal(url.searchParams.get("apiKey"), "server-only-key");
-      assert.ok(options.signal instanceof AbortSignal);
-      return Response.json({ features: [
-        { properties: { place_id: "osm123", name: "Lunch", formatted: "Main Street", lat: 14.551, lon: 121.021, secret: "discard" } },
-        { properties: {} },
-      ] });
-    },
-  });
-  const response = await handler(request());
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("Cache-Control"), "no-store");
-  assert.deepEqual(await response.json(), {
-    places: [{ id: "geoapify:osm123", name: "Lunch", address: "Main Street", latitude: 14.551, longitude: 121.021 }],
-  });
+test("HERE autosuggest retains restaurant-and-mall input and returns branch coordinates",async()=>{
+  const handler=create({fetchPlaces:async(url,options)=>{
+    assert.equal(url.origin,"https://autosuggest.search.hereapi.com");
+    assert.equal(url.pathname,"/v1/autosuggest");
+    assert.equal(url.searchParams.get("q"),"TGI Fridays Opus");
+    assert.equal(url.searchParams.get("at"),"14.55,121.02");
+    assert.equal(url.searchParams.get("limit"),"10");
+    assert.equal(url.searchParams.get("apiKey"),"server-key");
+    assert.equal(url.searchParams.has("in"),false);
+    assert.ok(options.signal instanceof AbortSignal);
+    return Response.json({items:[venue(),venue("mall",{title:"Opus Mall",categories:[{id:"600-6100-0062"}]}),
+      {resultType:"chainQuery",title:"TGI Fridays",href:"https://untrusted.test"}]});
+  }});
+  const response=await handler(request());
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get("Cache-Control"),"no-store");
+  assert.deepEqual(await response.json(),{places:[{id:"here:pds:place:opus",name:"TGI Friday's-Opus",address:"Opus, Quezon City",latitude:14.59261,longitude:121.08071}]});
 });
 
-test("guests, invalid tokens, anonymous and non-Google accounts never call the provider", async () => {
-  for (const [user, token, status] of [
-    [google, "", 401], [null, "valid", 401],
-    [{ ...google, is_anonymous: true }, "valid", 401],
-    [{ id: "account", app_metadata: { provider: "email", providers: null } }, "valid", 403],
-  ]) {
-    const handler = createVenueHandler({ authenticate: async () => user,
-      apiKey: () => "key", fetchPlaces: async () => assert.fail("Provider should not be called") });
-    assert.equal((await handler(request(undefined, token))).status, status);
+test("fast-food, cafes and pubs are valid meal venues",async()=>{
+  const handler=create({fetchPlaces:async()=>Response.json({items:[
+    venue("mcdonalds",{title:"McDonald's",categories:[{id:"100-1000-0009"}]}),
+    venue("cafe",{categories:[{id:"100-1100-0010"}]}),venue("pub",{categories:[{id:"200-2000-0011"}]})]})});
+  const response=await handler(request());
+  assert.equal((await response.json()).places.length,3);
+});
+
+test("invalid places, addresses and unrelated POIs cannot become confirmed locations",async()=>{
+  const handler=create({fetchPlaces:async()=>Response.json({items:[null,venue("bad",{position:{lat:91,lng:121}}),
+    venue("missing",{position:undefined}),venue("wrong-id",{id:""}),venue("blank",{title:" "}),
+    venue("street",{resultType:"street"}),venue("unknown",{categories:[]}),venue("school",{categories:[{id:"800-8200-0173"}]}),venue()]})});
+  const response=await handler(request());
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).places.length,1);
+});
+
+test("empty input makes no provider request; empty results succeed and results cap at ten",async()=>{
+  assert.deepEqual(await (await create({fetchPlaces:async()=>assert.fail("No request")})(request({latitude:14.55,longitude:121.02,query:"  "}))).json(),{places:[]});
+  for(const length of [0,20]){
+    const response=await create({fetchPlaces:async()=>Response.json({items:Array.from({length},(_,i)=>venue(String(i)))})})(request());
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).places.length,Math.min(length,10));
   }
 });
 
-test("rejects invalid coordinates and malformed JSON before lookup", async () => {
-  const handler = createVenueHandler({ authenticate: async () => google,
-    apiKey: () => "key", fetchPlaces: async () => assert.fail("Provider should not be called") });
-  for (const body of [null, {}, { latitude: "14", longitude: 121 },
-    { latitude: 91, longitude: 121 }, { latitude: 14, longitude: -181 }]) {
-    assert.equal((await handler(request(body))).status, 400);
-  }
-  const malformed = new Request("https://test", { method: "POST",
-    headers: { Authorization: "Bearer valid" }, body: "broken JSON" });
-  assert.equal((await handler(malformed)).status, 400);
-});
-
-test("missing server key returns an actionable configuration error", async () => {
-  const handler = createVenueHandler({ authenticate: async () => google,
-    apiKey: () => undefined, fetchPlaces: async () => assert.fail("Provider should not be called") });
-  assert.equal((await handler(request())).status, 503);
-});
-
-test("provider failure, malformed response and timeouts retain manual venue fallback", async () => {
-  for (const fetchPlaces of [
-    async () => new Response("quota", { status: 429 }),
-    async () => Response.json({ invalid: true }),
-    async () => { throw new DOMException("Timeout", "TimeoutError"); },
-  ]) {
-    const handler = createVenueHandler({ authenticate: async () => google,
-      apiKey: () => "key", fetchPlaces });
-    const response = await handler(request());
-    assert.ok([502, 503].includes(response.status));
-    assert.match((await response.json()).error, /Enter your own venue/);
+test("guests, invalid tokens, anonymous and non-Google accounts never call HERE",async()=>{
+  for(const [user,token,status] of [[google,"",401],[null,"valid",401],[{...google,is_anonymous:true},"valid",401],
+    [{id:"account",app_metadata:{provider:"email",providers:null}},"valid",403]]){
+    const response=await create({authenticate:async()=>user,fetchPlaces:async()=>assert.fail("No lookup")})(request(undefined,token));
+    assert.equal(response.status,status);
   }
 });
 
-test("empty results are successful and large result sets are capped", async () => {
-  for (const length of [0, 20]) {
-    const handler = createVenueHandler({ authenticate: async () => google,
-      apiKey: () => "key", fetchPlaces: async () => Response.json({
-        features: Array.from({ length }, (_, i) => ({ properties: { place_id: `${i}`, lat: 14.55, lon: 121.02 } })),
-      }) });
-    const response = await handler(request());
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).places.length, Math.min(length, 10));
+test("invalid input is rejected before lookup",async()=>{
+  const handler=create({fetchPlaces:async()=>assert.fail("No lookup")});
+  for(const body of [null,{}, {latitude:"14",longitude:121},{latitude:91,longitude:121},
+    {latitude:14,longitude:-181},{latitude:14,longitude:121,query:null},{latitude:14,longitude:121,query:"a".repeat(121)}]){
+    assert.equal((await handler(request(body))).status,400);
+  }
+  assert.equal((await handler(new Request("https://test",{method:"POST",headers:{Authorization:"Bearer valid"},body:"broken"}))).status,400);
+});
+
+test("missing HERE key and provider failures retain manual venue entry",async()=>{
+  const missing=await create({apiKey:()=>undefined,fetchPlaces:async()=>assert.fail("No lookup")})(request());
+  assert.equal(missing.status,503);
+  assert.match((await missing.json()).error,/Enter your own venue/);
+  for(const fetchPlaces of [async()=>new Response("quota",{status:429}),async()=>Response.json({invalid:true}),
+    async()=>{throw new DOMException("Timeout","TimeoutError");}]){
+    const response=await create({fetchPlaces})(request());
+    assert.ok([502,503].includes(response.status));
+    assert.match((await response.json()).error,/Enter your own venue/);
   }
 });
 
-test("restaurant names find distant branches when editing a meal from home", async () => {
-  const handler = createVenueHandler({ authenticate: async () => google,
-    apiKey: () => "key", fetchPlaces: async (url) => {
-      assert.equal(url.pathname, "/v1/geocode/autocomplete");
-      assert.equal(url.searchParams.get("text"), "tgi fridays");
-      assert.equal(url.searchParams.get("type"), "amenity");
-      assert.equal(url.searchParams.get("limit"), "10");
-      assert.equal(url.searchParams.has("filter"), false);
-      assert.equal(url.searchParams.get("bias"), "proximity:121.02,14.55");
-      return Response.json({ features: [
-        { properties: { place_id: "distant-branch", name: "TGI Fridays", formatted: "Distant mall", lat: 14.8, lon: 121.02 } },
-      ] });
-    } });
-  const response = await handler(request({ latitude: 14.55, longitude: 121.02, query: " tgi fridays " }));
-  assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).places, [
-    { id: "geoapify:distant-branch", name: "TGI Fridays", address: "Distant mall", latitude: 14.8, longitude: 121.02 },
-  ]);
+test("rejects other HTTP methods before authentication",async()=>{
+  assert.equal((await create({authenticate:async()=>assert.fail("No auth")})(new Request("https://test"))).status,405);
 });
 
-test("McDonald searches include fast-food branches and retain real map coordinates", async () => {
-  for (const query of ["McDonald", "mcdonalds", "McDonald’s"]) {
-    const handler = createVenueHandler({ authenticate: async () => google,
-      apiKey: () => "key", fetchPlaces: async (url) => {
-        assert.equal(url.pathname, "/v1/geocode/autocomplete");
-        assert.equal(url.searchParams.get("text"), query);
-        assert.equal(url.searchParams.get("type"), "amenity");
-        return Response.json({ features: [{properties: {
-          place_id: "fast-food", name: "McDonald's", formatted: "Makati",
-          categories: ["catering", "catering.fast_food"], lat: 14.5519003, lon: 121.0194003,
-        }}] });
-      } });
-    const response = await handler(request({latitude: 14.55, longitude: 121.02, query}));
-    assert.equal(response.status, 200);
-    assert.deepEqual((await response.json()).places, [{
-      id: "geoapify:fast-food", name: "McDonald's", address: "Makati", latitude: 14.5519003, longitude: 121.0194003,
-    }]);
+test("quota is reserved for the authenticated user before exactly one provider call",async()=>{
+  const events=[];
+  const response=await create({consumeSearch:async(id)=>{events.push(id);return {allowed:true};},
+    fetchPlaces:async()=>{assert.deepEqual(events,[google.id]);events.push("HERE");return Response.json({items:[]});}})(request());
+  assert.equal(response.status,200);
+  assert.deepEqual(events,[google.id,"HERE"]);
+});
+
+test("denied, missing and broken quota checks fail closed",async()=>{
+  for(const reservation of [{allowed:false,reason:"shared_limit"},{allowed:false,reason:"disabled"},
+    {allowed:false,reason:"user_daily_limit"},{allowed:false,reason:"user_minute_limit"},null,{}, {allowed:"true"}]){
+    const response=await create({consumeSearch:async()=>reservation,fetchPlaces:async()=>assert.fail("No HERE call")})(request());
+    assert.equal(response.status,429);
+    assert.match((await response.json()).error,/enter your own venue/i);
   }
+  const response=await create({consumeSearch:async()=>{throw Error("Database unavailable");},
+    fetchPlaces:async()=>assert.fail("No HERE call")})(request());
+  assert.equal(response.status,503);
+  const defaultGuard=createVenueHandler({authenticate:async()=>google,apiKey:()=>"key",fetchPlaces:async()=>assert.fail("No HERE call")});
+  assert.equal((await defaultGuard(request())).status,429);
 });
 
-test("invalid restaurant names never reach the provider", async () => {
-  const handler = createVenueHandler({ authenticate: async () => google,
-    apiKey: () => "key", fetchPlaces: async () => assert.fail("Should not query") });
-  for (const query of [42, null, "a".repeat(121)]) {
-    assert.equal((await handler(request({ latitude: 14.55, longitude: 121.02, query }))).status, 400);
+test("rejected input and unauthorized requests never consume quota",async()=>{
+  const consumeSearch=async()=>assert.fail("No reservation");
+  for(const body of [{latitude:14,longitude:121,query:"a"},{latitude:14,longitude:121,query:" "},{}]){
+    await create({consumeSearch})(request(body));
   }
+  assert.equal((await create({consumeSearch})(request(undefined,""))).status,401);
+  assert.equal((await create({consumeSearch,authenticate:async()=>null})(request())).status,401);
+  assert.equal((await create({consumeSearch,apiKey:()=>null})(request())).status,503);
 });
 
-test("autocomplete omits known non-food places but retains uncategorized venues", async () => {
-  const handler = createVenueHandler({ authenticate: async () => google, apiKey: () => "key",
-    fetchPlaces: async (url) => {
-      assert.equal(url.searchParams.get("text"), "TGI Friday’s");
-      return Response.json({features: [
-        {properties:{place_id:"school", name:"School", category:"education.school", lat:14.55, lon:121.02}},
-        {properties:{place_id:"uncategorized", name:"TGI Fridays", lat:14.55, lon:121.02}},
-        ...Array.from({length:12}, (_,i) => ({properties:{place_id:`tgi-${i}`, name:"T.G.I. Fridays", category:"catering.restaurant", lat:14.55, lon:121.02}})),
-      ]});
-    } });
-  const response = await handler(request({latitude:14.55, longitude:121.02, query:"TGI Friday’s"}));
-  const {places} = await response.json();
-  assert.equal(response.status, 200);
-  assert.equal(places.length, 10);
-  assert.equal(places[0].id, "geoapify:uncategorized");
-  assert.ok(places.every(p => p.id !== "geoapify:school"));
-});
-
-test("results without valid map coordinates are omitted", async () => {
-  const handler = createVenueHandler({ authenticate: async () => google,
-    apiKey: () => "key", fetchPlaces: async () => Response.json({ features: [
-      { properties: { place_id: "missing" } },
-      { properties: { place_id: "invalid", lat: 91, lon: 121 } },
-      { properties: { place_id: "valid", lat: 14.55, lon: 121.02 } },
-    ] }) });
-  const response = await handler(request());
-  assert.equal((await response.json()).places.length, 1);
-});
-
-test("rejects other HTTP methods before authentication", async () => {
-  const handler = createVenueHandler({ authenticate: async () => assert.fail("Should not authenticate"),
-    apiKey: () => "key" });
-  assert.equal((await handler(new Request("https://test"))).status, 405);
+test("a failed provider attempt still consumes one reservation without a retry",async()=>{
+  let reserved=0,calls=0;
+  const response=await create({consumeSearch:async()=>{reserved++;return {allowed:true};},
+    fetchPlaces:async()=>{calls++;throw Error("Timeout");}})(request());
+  assert.equal(response.status,503);assert.equal(reserved,1);assert.equal(calls,1);
 });

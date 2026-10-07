@@ -40,7 +40,7 @@ class VenueTestCloud extends CloudService {
     return lookup?.call(query) ??
         Future.value([
           {
-            'id': 'geoapify:branch',
+            'id': 'here:pds:place:branch',
             'name': 'Italianis · Greenbelt',
             'address': 'Greenbelt, Makati',
             'latitude': 14.552,
@@ -187,7 +187,7 @@ void main() {
       expect(cloud.searches.single.query, 'Italianis');
       expect(find.text('Italianis · Greenbelt'), findsOneWidget);
       expect(find.text('Greenbelt, Makati'), findsOneWidget);
-      expect(find.text('Powered by Geoapify'), findsOneWidget);
+      expect(find.text('Powered by HERE'), findsOneWidget);
       await tester.runAsync(() async {
         final boundary =
             previewKey.currentContext!.findRenderObject()!
@@ -205,7 +205,7 @@ void main() {
       expect(find.byKey(const ValueKey('venue-suggestions')), findsNothing);
       expect(find.byType(BottomSheet), findsNothing);
       expect(saved!.venue, 'Italianis · Greenbelt');
-      expect(saved!.placeId, 'geoapify:branch');
+      expect(saved!.placeId, 'here:pds:place:branch');
       expect(saved!.latitude, 14.552);
       expect(saved!.longitude, 121.021);
       expect(saved!.hasLocation, isTrue);
@@ -343,7 +343,7 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
-      expect(saved!.placeId, 'geoapify:branch');
+      expect(saved!.placeId, 'here:pds:place:branch');
       expect(saved!.hasLocation, isTrue);
       expect(find.byKey(const ValueKey('venue-suggestions')), findsNothing);
     },
@@ -421,7 +421,7 @@ void main() {
       final chosen = await tester.runAsync(
         () => app.repository.list('account'),
       );
-      expect(chosen!.single.placeId, 'geoapify:branch');
+      expect(chosen!.single.placeId, 'here:pds:place:branch');
       expect(chosen.single.hasLocation, isTrue);
       expect(find.byType(BottomSheet), findsNothing);
       await tester.enterText(field, 'Home');

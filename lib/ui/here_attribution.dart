@@ -3,8 +3,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'theme.dart';
 
-class GeoapifyAttribution extends StatelessWidget {
-  const GeoapifyAttribution({super.key});
+class HereAttribution extends StatelessWidget {
+  const HereAttribution({super.key});
 
   Future<void> _open(BuildContext context, String address) async {
     try {
@@ -15,7 +15,7 @@ class GeoapifyAttribution extends StatelessWidget {
         return;
       }
     } catch (_) {
-      // The map remains usable when the device cannot open an external browser.
+      // Suggestions remain usable when the device cannot open a browser.
     }
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -31,9 +31,7 @@ class GeoapifyAttribution extends StatelessWidget {
       alignment: WrapAlignment.center,
       children: [
         for (final entry in const {
-          'Powered by Geoapify': 'https://www.geoapify.com/',
-          '© OpenStreetMap contributors':
-              'https://www.openstreetmap.org/copyright',
+          'Powered by HERE': 'https://www.here.com/',
         }.entries)
           TextButton(
             style: TextButton.styleFrom(

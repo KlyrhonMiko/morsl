@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 import '../controller.dart';
 import '../data/models.dart';
 import '../services/venue_location.dart';
-import 'geoapify_attribution.dart';
+import 'here_attribution.dart';
 import 'location_access.dart';
 import 'theme.dart';
 
@@ -357,7 +357,7 @@ class _VenueFieldState extends State<VenueField> {
                       },
                     ),
                   ],
-                  if (candidates.isNotEmpty) const GeoapifyAttribution(),
+                  if (candidates.isNotEmpty) const HereAttribution(),
                 ],
               ),
             ),

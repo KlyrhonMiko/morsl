@@ -110,23 +110,38 @@ Rendered UI previews are in `output/previews/`.
    Android and iOS register this callback scheme; desktop protocol registration
    is required separately for Windows sign-in. Disable email/password and anonymous
    sign-in for this app. Invitations require an existing account.
-3. Create a free [Geoapify project](https://myprojects.geoapify.com/). Create separate
-   keys for map tiles and server-side Places lookup. Deploy `supabase/functions/nearby-venues`:
-   `supabase secrets set GEOAPIFY_PLACES_API_KEY=<server-key>` then
+3. Create a HERE project and enable Geocoding & Search. Set the server-side
+   Supabase secret `HERE_API_KEY` and deploy `supabase/functions/nearby-venues`:
+   `supabase secrets set HERE_API_KEY=<server-key>` then
    `supabase functions deploy nearby-venues`. The function validates the caller
    with Supabase Auth and requires a non-anonymous Google account.
-4. Configure your Geoapify keys and usage limits in its project dashboard. Map
-   tiles use the public client key; Places lookup uses only the server key.
-   The map displays clickable Geoapify and OpenStreetMap attribution.
+4. Check the limits and billing requirements offered to your HERE account before
+   enabling production search. Some signup flows require billing information.
+   Apply the `here_search_limits` migration before deploying the function.
+   Its budget defaults to disabled. This account's pricing page shows 5,000 free
+   Autosuggest transactions/month; the deployed guard uses at most 4,000 requests
+   across any 32 UTC dates, with 100/day and 10/minute per Google account.
+   Reservations are atomic and happen before HERE; failures count and database
+   errors stop search. The typing delay is 450 ms, with at least two characters.
+   Keep the HERE key dedicated to Morsl. Other apps or direct requests using that
+   key are outside this guard. Recheck the allowance if the HERE plan changes.
+   In Supabase's SQL editor, pause immediately with:
+   `update public.here_search_budget set enabled=false where id=true;`
+   Inspect the cap and recent consumption with:
+   `select * from public.here_search_budget;`
+   `select * from public.here_search_usage order by day desc;`
+   Manual venue entry remains available when search is paused.
+   Search suggestions show clickable HERE attribution. The Map tab is currently
+   a placeholder and makes no map-tile requests.
 5. Copy `config.example.json` to gitignored `config.local.json` and fill in the
-   Supabase URL, **publishable/anon client key**, `GEOAPIFY_MAPS_API_KEY`, and
-   `SEGMENTATION_URL`. Never put a Supabase service-role key or the server Places key in the app.
+   Supabase URL, **publishable/anon client key**, and `SEGMENTATION_URL`.
+   Never put a Supabase service-role key or the HERE server key in the app.
 6. Run `flutter run --dart-define-from-file=config.local.json`.
 
 
 No keys are checked in. Without service configuration, browsing examples remains
-available. Capture and all changes require Google sign-in. The Map shows a labeled
-illustration and local locations; cloud actions explain their configuration state.
+available. Capture and all changes require Google sign-in. The Map shows a temporary
+placeholder; saved meal locations remain stored. Cloud actions explain their configuration state.
 
 ## What is implemented
 
@@ -152,17 +167,16 @@ illustration and local locations; cloud actions explain their configuration stat
 - Meal details and edge corrections autosave independently of arrangements;
   evening reminders are scoped to the account,
   scheduled for unfinished drafts independently of AI completion.
-- Confirmed map locations, Geoapify maps with meal clustering, memory pin opening, companion
-  and repeat filters, offline list. Restaurant-name search finds branches without
-  a distance cutoff, ranking those closest to the photo's location or permission-based
-  device location first so meals can be edited after travelling home. Selecting a
-  branch from the dropdown in the meal's “Where was it?” field immediately fills
-  the venue name and confirms its map coordinates; a typed name can also be saved
-  without a pin. Typed names use Geoapify amenity autocomplete, including fast-food
-  branches, while empty queries browse nearby catering venues through Places.
-  Known non-food autocomplete categories are omitted; uncategorized amenities
-  remain selectable. Provider requests time out after eight seconds. Deploy the
-  updated `nearby-venues` function with app updates.
+- Confirmed meal locations with HERE restaurant autocomplete. Typed names appear
+  as branch suggestions in the meal's “Where was it?” dropdown after a 450 ms
+  typing pause, starting at two characters. Search uses the photo location or
+  permission-based device location as context, without a radius cutoff.
+  Only concrete restaurant, cafe and pub places with valid coordinates are
+  selectable; mall, address and search-query suggestions are omitted. Selection
+  fills the venue and confirms coordinates with no separate details lookup.
+  A typed name can be saved without a pin. Provider requests time out after
+  eight seconds. The Map tab is a placeholder; existing locations are preserved.
+  Deploy the updated `nearby-venues` function with app updates.
 - Browse-only guest access and Google sign-in for actions. Account-scoped UI, records, files,
   and reminder preferences; content-addressed storage, persistent/coalesced sync
   operations, backoff/manual retry, revision conflicts and explicit resolution.
@@ -253,10 +267,11 @@ original fallback, concurrent editing during extraction, account isolation,
 backup interruption/idempotency, and acknowledgements of older queue operations.
 `test/widget_test.dart` exercises search/navigation, saving after AI failure, and
 renders 375×812, 812×375, and 1440×1000 previews with real photos and fonts.
-It also checks Geoapify meal markers, visible attribution, and the offline view
-using local test tiles. Venue endpoint tests cover Google account requirements,
-coordinate validation, Geoapify's longitude-first parameters, response mapping,
-and failed or timed-out provider requests.
+It also checks the map placeholder and preservation of saved coordinates.
+Venue endpoint tests cover Google account requirements, coordinate validation,
+HERE latitude-first parameters, restaurant/mall query preservation, exclusion
+of non-food/query results, response mapping, and provider failures/timeouts.
+Dropdown tests cover HERE attribution, selection/autosave and stale responses.
 
 The backend test uses PGlite (PostgreSQL in WASM) with mocked Supabase Auth
 schemas and three synthetic identities. It tests actual SQL/RLS, not Dart mocks:
@@ -289,7 +304,7 @@ privacy policy/terms URL. The APK uses debug signing and is for beta testing;
 store distribution needs your signing configuration.
 
 Technical references: [cloud segmentation architecture](modal_architecture.md),
-[Geoapify map tiles and attribution](https://apidocs.geoapify.com/docs/maps/map-tiles/),
+[HERE Autosuggest](https://docs.here.com/geocoding-and-search/docs/autosuggest),
 [Supabase database RLS](https://supabase.com/docs/guides/database/postgres/row-level-security),
 [Storage access](https://supabase.com/docs/guides/storage/security/access-control).
 Fonts are bundled with OFL licenses. Photo sources are in `docs/assets.md`.

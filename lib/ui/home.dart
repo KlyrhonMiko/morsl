@@ -182,11 +182,7 @@ class _MorslHomeState extends ConsumerState<MorslHome>
                     ),
                     Expanded(
                       child: app.destination == 1
-                          ? MealMap(
-                              key: ValueKey(app.scope),
-                              app: app,
-                              onOpen: open,
-                            )
+                          ? MealMap(key: ValueKey(app.scope))
                           : app.destination == 0
                           ? PlateLibrary(
                               key: ValueKey(app.scope),

@@ -462,10 +462,18 @@ class CloudService {
     String query = '',
   }) async {
     requireGoogleAccount();
-    final response = await client!.functions.invoke(
-      'nearby-venues',
-      body: {'latitude': lat, 'longitude': lng, 'query': query.trim()},
-    );
-    return List<Map<String, dynamic>>.from(response.data['places'] ?? []);
+    try {
+      final response = await client!.functions.invoke(
+        'nearby-venues',
+        body: {'latitude': lat, 'longitude': lng, 'query': query.trim()},
+      );
+      return List<Map<String, dynamic>>.from(response.data['places'] ?? []);
+    } on FunctionException catch (error) {
+      final details = error.details;
+      if (details is Map && details['error'] is String) {
+        throw StateError(details['error'] as String);
+      }
+      throw StateError('Venue lookup unavailable. Enter your own venue.');
+    }
   }
 }

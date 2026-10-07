@@ -10,7 +10,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:morsl/controller.dart';
 import 'package:morsl/data/database.dart';
 import 'package:morsl/data/models.dart';
@@ -71,12 +70,6 @@ class PendingCaptureController extends MorslController {
       capturing = false;
     }
   }
-}
-
-class LocalTestTiles extends TileProvider {
-  @override
-  ImageProvider getImage(TileCoordinates coordinates, TileLayer options) =>
-      FileImage(File('assets/images/salad.jpg'));
 }
 
 class SwitchingCloud extends CloudService {
@@ -335,41 +328,22 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'Geoapify map opens a meal and keeps attribution and offline access',
-    (tester) async {
-      final memory = app.memories.first
-        ..latitude = 14.55
-        ..longitude = 121.02
-        ..locationConfirmed = true;
-      Memory? opened;
-      await tester.pumpWidget(
-        host(
-          MaterialApp(
-            home: Scaffold(
-              body: MealMap(
-                app: app,
-                apiKey: 'test-key',
-                tileProvider: LocalTestTiles(),
-                onOpen: (meal) => opened = meal,
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(FlutterMap), findsOneWidget);
-      expect(find.text('Powered by Geoapify'), findsOneWidget);
-      expect(find.text('© OpenStreetMap contributors'), findsOneWidget);
-      await tester.tap(find.byTooltip(memory.venue));
-      expect(opened?.id, memory.id);
-      await tester.tap(find.text('Use offline list'));
-      await tester.pumpAndSettle();
-      expect(find.byType(FlutterMap), findsNothing);
-      expect(find.textContaining('Illustrated preview'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
+  testWidgets('map shows a placeholder and preserves saved locations', (
+    tester,
+  ) async {
+    final memory = app.memories.first
+      ..latitude = 14.55
+      ..longitude = 121.02
+      ..locationConfirmed = true;
+    await tester.pumpWidget(
+      host(MaterialApp(home: Scaffold(body: const MealMap()))),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Your meal map, on pause.'), findsOneWidget);
+    expect(find.textContaining('Find your meals in History'), findsOneWidget);
+    expect(memory.hasLocation, isTrue);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'guest capture asks for Google and an editor route remains browse-only',
@@ -442,7 +416,10 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(host(const MorslApp()));
+    final previewKey = GlobalKey();
+    await tester.pumpWidget(
+      host(RepaintBoundary(key: previewKey, child: const MorslApp())),
+    );
     await tester.pumpAndSettle();
     expect(find.text('Your plate library'), findsOneWidget);
     await tester.enterText(find.byType(TextField).first, 'Wildflour');
@@ -456,8 +433,20 @@ void main() {
     expect(find.text('All caught up.'), findsOneWidget);
     await tester.tap(find.text('Map').last);
     await tester.pumpAndSettle();
-    expect(find.text('A little map of your life.'), findsOneWidget);
+    expect(find.text('Your meal map, on pause.'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    await tester.runAsync(() async {
+      final boundary =
+          previewKey.currentContext!.findRenderObject()!
+              as RenderRepaintBoundary;
+      final image = await boundary.toImage();
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      await Directory('output/previews').create(recursive: true);
+      await File(
+        'output/previews/map-placeholder.png',
+      ).writeAsBytes(bytes!.buffer.asUint8List());
+      image.dispose();
+    });
   });
   testWidgets('draft people menu filters and resets on a small phone', (
     tester,
