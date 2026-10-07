@@ -20,6 +20,7 @@ function setup(overrides = {}) {
     cleanup: async () => {},
     reserve: async () => "reserved",
     confirm: async () => {},
+    transfer: async () => new Response(null, { status: 204 }),
     ...overrides,
   });
   const request = (body) =>
@@ -61,6 +62,35 @@ test("signed image reads require authentication, membership and current referenc
     200,
   );
   assert.equal(ok.signed[0][0], "GET");
+});
+
+test("each binary transfer rechecks permissions; request limits return 429", async () => {
+  let transfers = 0;
+  const handler = createImageHandler({
+    authenticate: async () => ({ id: A, app_metadata: { provider: "google" } }),
+    mealForUser: async () => ({ creator: A }),
+    referencesForUser: async () => new Set([original]),
+    reserve: async () => "reserved",
+    transfer: async () => {
+      transfers++;
+      throw Object.assign(new Error("limit"), { code: "request_limit" });
+    },
+    sign: async () => {
+      assert.fail("must not issue direct R2 links");
+    },
+  });
+  const invoke = (key, method = "GET") =>
+    handler(
+      new Request(`https://example.test?key=${key}&size=3`, {
+        method,
+        headers: { Authorization: "Bearer token" },
+        ...(method === "PUT" ? { body: new Uint8Array([1, 2, 3]) } : {}),
+      }),
+    );
+  assert.equal((await invoke(original)).status, 429);
+  assert.equal((await invoke(original, "PUT")).status, 429);
+  assert.equal((await invoke(plate)).status, 403);
+  assert.equal(transfers, 2);
 });
 
 test("full budget issues no PUT URL and verification requires upload permission", async () => {

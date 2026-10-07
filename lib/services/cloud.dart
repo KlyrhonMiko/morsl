@@ -263,7 +263,30 @@ class CloudService {
     final url = response.data['url'] as String?;
     if (requestedBy != account) throw StateError('Account changed.');
     if (url == null) throw StateError('Image storage is unavailable.');
+    final uri = Uri.parse(url);
+    if (uri.scheme != 'https' || uri.path != '/functions/v1/image-storage') {
+      throw StateError(
+        'Image storage needs an update. Your local photo is safe.',
+      );
+    }
     return url;
+  }
+
+  Map<String, String> get imageHeaders {
+    requireGoogleAccount();
+    final token = client!.auth.currentSession?.accessToken;
+    if (token == null) {
+      throw StateError('Sign in again to access cloud photos.');
+    }
+    return {'Authorization': 'Bearer $token'};
+  }
+
+  void _checkImageResponse(http.Response response) {
+    if (response.statusCode == 429) {
+      throw StateError(
+        'Cloud image request limit reached. Please try again later. Your local photos are safe.',
+      );
+    }
   }
 
   Future<FunctionResponse> _imageRequest(
@@ -283,6 +306,11 @@ class CloudService {
           'Cloud storage is full. Your photo is saved on this device.',
         );
       }
+      if (error.details is Map && error.details['code'] == 'request_limit') {
+        throw StateError(
+          'Cloud image request limit reached. Please try again later. Your local photos are safe.',
+        );
+      }
       rethrow;
     }
   }
@@ -291,8 +319,10 @@ class CloudService {
     final accountBefore = account;
     final url = await _imageUrl('download', path);
     final response =
-        await (_imageClient?.get(Uri.parse(url)) ?? http.get(Uri.parse(url)))
+        await (_imageClient?.get(Uri.parse(url), headers: imageHeaders) ??
+                http.get(Uri.parse(url), headers: imageHeaders))
             .timeout(const Duration(seconds: 60));
+    _checkImageResponse(response);
     if (response.statusCode != 200) {
       throw StateError('Image could not be loaded. Connect and try again.');
     }
@@ -307,14 +337,21 @@ class CloudService {
         await (_imageClient?.put(
                   Uri.parse(url),
                   body: bytes,
-                  headers: {'Content-Type': imageContentType(path)},
+                  headers: {
+                    ...imageHeaders,
+                    'Content-Type': imageContentType(path),
+                  },
                 ) ??
                 http.put(
                   Uri.parse(url),
                   body: bytes,
-                  headers: {'Content-Type': imageContentType(path)},
+                  headers: {
+                    ...imageHeaders,
+                    'Content-Type': imageContentType(path),
+                  },
                 ))
             .timeout(const Duration(seconds: 60));
+    _checkImageResponse(response);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw StateError(
         'Photo upload failed. Your local copy is safe; try syncing again.',

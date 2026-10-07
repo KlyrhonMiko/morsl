@@ -25,8 +25,9 @@ need to retain.
    API token. Supabase provides `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and
    `SUPABASE_SERVICE_ROLE_KEY` to the deployed function automatically. Never put
    R2 keys or the service-role key in the Flutter app or `config.local.json`.
-3. Apply both migrations to the fresh Supabase database: the meal schema and
-   `20261007012718_image_storage_quota.sql`. Configure Google sign-in as described
+3. Apply all migrations to the fresh Supabase database: the meal schema,
+   `20261007012718_image_storage_quota.sql`, and
+   `20261007015052_image_operation_limits.sql`. Configure Google sign-in as described
    in README.md. The quota migration is required before any upload can be signed.
 4. Deploy the endpoint from this project directory:
 
@@ -36,7 +37,7 @@ need to retain.
 
    The function verifies the bearer token itself using Supabase Auth `getUser()`
    and checks the server-managed Google provider and meal permissions before
-   signing any URL. `--no-verify-jwt` disables only the gateway's legacy JWT check;
+   authorizing any transfer. `--no-verify-jwt` disables only the gateway's legacy JWT check;
    the endpoint still requires a valid authenticated Google account.
 5. Point `config.local.json` at the fresh Supabase project and build/run Flutter
    with `--dart-define-from-file=config.local.json`. No R2 setting is needed on the
@@ -73,15 +74,17 @@ need to retain.
 - Cache keys include the signed-in account. Account changes clear Flutter's decoded
   image cache; a successful membership revocation check also removes that meal's
   cached images. The OS may discard temporary cache files at any time.
-- Signed R2 URLs expire after five minutes and are never saved as image references.
-  Upload signatures bind the image type and byte length. Original uploads require
+- Transfers use authenticated Supabase function URLs, and bytes pass through the
+  function. Direct reusable R2 links are never issued to the device. Each GET/PUT
+  rechecks the account and meal permissions; knowing an endpoint URL grants no access.
+  Uploads must match their reserved byte length. Original uploads require
   creator access; plate uploads require membership and the caller's own folder.
   Downloads require current referenced assets, not just a guessed object key.
 - Owner cleanup runs at most daily during sync, preserving all members' referenced
   cutouts and allowing 24 hours for uncommitted uploads. Photo removal and meal
   deletion also request cleanup immediately; daily cleanup retries failures.
   Quota stays charged until R2 acknowledges deletion, and cleanup waits at least
-  24 hours after the last upload grant expires. Missing objects from abandoned
+  24 hours after the last upload reservation's grace period expires. Missing objects from abandoned
   uploads are also deleted idempotently before releasing their reservation.
   A failed delete retains its reservation. Cleanup blocks new grants for an
   object while deleting it. A crashed cleanup can leave a charged `deleting`
@@ -100,9 +103,47 @@ budget. Use this bucket exclusively through the endpoint. Manual uploads, other
 buckets, and other writers bypass this app's ledger. Do not clear the ledger or
 reset its counter while objects remain in R2.
 
+## Shared request limits
+
+The function meters each R2 attempt before sending it and disables automatic
+R2 retries. All accounts share these limits:
+
+| Requests | Limit |
+| --- | ---: |
+| Class A: uploads and cleanup listing pages | 900,000 |
+| Class B: downloads and upload size verification (HEAD) | 9,000,000 |
+
+Both limits use the current UTC date plus the preceding 31 UTC dates. This
+conservative rolling window protects across monthly billing-cycle boundaries;
+there is no automatic full reset on the first of the month. Capacity returns
+as older daily counts leave the window. A 1,000-request cushion in each class
+was recorded when enabling metering to allow for setup checks and earlier activity.
+Attempts that fail are still counted; counters are never refunded. Deletes
+remain free and can run without an operation allowance, although cleanup needs
+class A capacity to list objects first. At capacity, the function returns 429
+with `request_limit`, keeps local unsynced photos safe, and stops further R2
+attempts in that class. Cached images and local photos remain usable.
+
+```sql
+select class, sum(requests) as requests_in_window,
+  case class when 'A' then 900000 else 9000000 end - sum(requests) as remaining
+from public.image_operation_usage
+where day >= (now() at time zone 'UTC')::date - 31
+group by class;
+```
+
+Deploy the updated function together with the updated Flutter app. Older builds
+do not attach authentication to image byte requests and need an update. Previously
+issued direct R2 links can remain usable until their original five-minute expiry.
+All new requests go through the limiter. Keep public bucket access disabled and
+restrict R2 credentials to this bucket. Other writers, dashboard use and other
+buckets bypass these counters and still consume the account-wide free allowance.
+Passing bytes through the function also consumes Supabase function invocations
+and outgoing bandwidth; Supabase plan limits and billing are separate.
+
 The free R2 allowance is shared across the entire app, not per user. Monitor storage
-and operation usage in Cloudflare; the 9 GB cap limits app storage, but does not
-cap billable read/write operations or guarantee a zero bill for the account.
+and operation usage in Cloudflare. The app caps its storage and R2 request attempts;
+it cannot guarantee a zero bill for unrelated account activity or Supabase usage.
 Cleanup runs when an owner syncs, so an inactive owner does not trigger daily cleanup.
 
 ## Verify before release

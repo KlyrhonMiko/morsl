@@ -1,7 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2.117.2";
-import { aws, endpoint, env, objectUrl, sign } from "./r2.ts";
+import { aws, endpoint, env, objectUrl } from "./r2.ts";
 import { createImageHandler, referencedKeys } from "./handler.mjs";
 import { createQuotaStorage } from "./quota.mjs";
+import { createMeteredFetch, readUpload } from "./operations.mjs";
 
 const userClient = (token: string) =>
   createClient(env("SUPABASE_URL"), env("SUPABASE_ANON_KEY"), {
@@ -22,10 +23,15 @@ const quota = async (name: string, params: Record<string, unknown>) => {
   return data;
 };
 
+const r2Fetch = createMeteredFetch({
+  consume: (kind: string) =>
+    quota("consume_image_operation", { p_class: kind }),
+  fetch: (url: string | URL, options: RequestInit) => aws().fetch(url, options),
+});
 const storage = createQuotaStorage({
   rpc: quota,
   fetchObject: (key: string, method: string) =>
-    aws().fetch(objectUrl(key), { method }),
+    r2Fetch(objectUrl(key), { method }),
 });
 const deleteTracked = storage.remove;
 
@@ -53,7 +59,36 @@ Deno.serve(createImageHandler({
     if (memoryError) throw memoryError;
     return referencedKeys(asset, memories ?? []);
   },
-  sign,
+  // Return only an authenticated app endpoint. Direct R2 URLs are reusable
+  // and would allow transfers that bypass operation accounting.
+  sign: (method: string, key: string, headers: Record<string, string>) => {
+    const url = new URL(env("SUPABASE_URL") + "/functions/v1/image-storage");
+    url.searchParams.set("key", key);
+    if (method === "PUT") {
+      url.searchParams.set("size", headers["Content-Length"]);
+    }
+    return url.toString();
+  },
+  transfer: async (req: Request, key: string, size: number, type: string) => {
+    const upload = req.method === "PUT";
+    const bytes = upload ? await readUpload(req, size) : undefined;
+    const response = await r2Fetch(objectUrl(key), {
+      method: upload ? "PUT" : "GET",
+      ...(upload
+        ? {
+          body: bytes,
+          headers: { "Content-Type": type, "Content-Length": String(size) },
+        }
+        : {}),
+    });
+    if (!response.ok) throw new Error("Image transfer failed");
+    return new Response(upload ? null : response.body, {
+      status: upload ? 204 : 200,
+      headers: upload
+        ? {}
+        : { "Content-Type": type, "Cache-Control": "no-store" },
+    });
+  },
   reserve: storage.reserve,
   confirm: storage.confirm,
   cleanup: async (token: string, user: string, meal: string) => {
@@ -87,7 +122,7 @@ Deno.serve(createImageHandler({
         if (continuation) {
           url.searchParams.set("continuation-token", continuation);
         }
-        const response = await aws().fetch(url);
+        const response = await r2Fetch(url, { operationClass: "A" });
         if (!response.ok) {
           throw new Error("Listing failed");
         }

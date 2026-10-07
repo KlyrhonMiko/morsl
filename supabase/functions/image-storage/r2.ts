@@ -11,6 +11,7 @@ export const aws = () =>
     secretAccessKey: env("R2_SECRET_ACCESS_KEY"),
     service: "s3",
     region: "auto",
+    retries: 0, // Each R2 attempt must be individually metered by the server.
   });
 export const endpoint = () =>
   `https://${env("R2_ACCOUNT_ID")}.r2.cloudflarestorage.com/${

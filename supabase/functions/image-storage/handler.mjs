@@ -20,12 +20,15 @@ export function createImageHandler(
     cleanup,
     reserve,
     confirm,
+    transfer,
   },
 ) {
   const json = (body, status = 200) =>
     Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   return async (req) => {
-    if (req.method !== "POST") return json({ error: "POST required" }, 405);
+    if (!["POST", "GET", "PUT"].includes(req.method)) {
+      return json({ error: "Method not allowed" }, 405);
+    }
     const token = /^Bearer (\S+)$/i.exec(req.headers.get("Authorization") ?? "")
       ?.[1];
     if (!token || token.length > 8192) {
@@ -44,7 +47,16 @@ export function createImageHandler(
       }
       let body;
       try {
-        body = await req.json();
+        if (req.method === "POST") {
+          body = await req.json();
+        } else {
+          const url = new URL(req.url);
+          body = {
+            action: req.method === "PUT" ? "upload" : "download",
+            key: url.searchParams.get("key"),
+            size: Number(url.searchParams.get("size")),
+          };
+        }
       } catch {
         return json({ error: "Invalid request" }, 400);
       }
@@ -101,6 +113,9 @@ export function createImageHandler(
           return json({ error: "Image unavailable" }, 403);
         }
       }
+      if (req.method !== "POST") {
+        return await transfer(req, body.key, body.size, types[extension]);
+      }
       const url = await sign(
         body.action === "upload" ? "PUT" : "GET",
         body.key,
@@ -111,8 +126,14 @@ export function createImageHandler(
           }
           : {},
       );
-      return json({ url, expiresIn: 300 });
-    } catch {
+      return json({ url });
+    } catch (error) {
+      if (error?.code === "request_limit") {
+        return json({
+          code: "request_limit",
+          error: "Cloud image request limit reached. Please try again later.",
+        }, 429);
+      }
       return json(
         { error: "Image storage unavailable. Please try again." },
         503,

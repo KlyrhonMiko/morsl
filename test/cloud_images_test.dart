@@ -14,6 +14,10 @@ class GoogleCloud extends CloudService {
   bool get signedInWithGoogle => true;
   @override
   String get account => '22222222-2222-4222-8222-222222222222';
+  @override
+  Map<String, String> get imageHeaders => {
+    'Authorization': 'Bearer test-token',
+  };
 }
 
 class FixtureClient extends http.BaseClient {
@@ -49,6 +53,42 @@ void main() {
     jsonEncode(data),
     200,
     headers: {'content-type': 'application/json'},
+  );
+
+  test(
+    'download limit is clear and every transfer carries authentication',
+    () async {
+      final client = SupabaseClient(
+        'https://supabase.example',
+        'test-key',
+        httpClient: requestClient(
+          (request) async => json({
+            'url':
+                'https://supabase.example/functions/v1/image-storage?key=$original',
+          }),
+        ),
+      );
+      final images = MockClient((request) async {
+        expect(request.headers['Authorization'], 'Bearer test-token');
+        return http.Response('', 429);
+      });
+      final cloud = GoogleCloud(client, MediaStore(), imageClient: images);
+      try {
+        await expectLater(
+          cloud.downloadImage(original),
+          throwsA(
+            isA<StateError>().having(
+              (e) => e.message,
+              'message',
+              contains('request limit'),
+            ),
+          ),
+        );
+      } finally {
+        images.close();
+        await client.dispose();
+      }
+    },
   );
 
   test(
@@ -111,7 +151,10 @@ void main() {
               calls.add('verified');
               return json({'ok': true});
             }
-            return json({'url': 'https://r2.example/${body['key']}'});
+            return json({
+              'url':
+                  'https://supabase.example/functions/v1/image-storage?key=${body['key']}',
+            });
           }
           calls.add('commit');
           saved = jsonDecode(request.body)['payload'];
@@ -119,7 +162,8 @@ void main() {
         }),
       );
       final images = MockClient((request) async {
-        calls.add(request.url.path.contains('plate-') ? 'plate' : 'original');
+        calls.add(request.url.query.contains('plate-') ? 'plate' : 'original');
+        expect(request.headers['Authorization'], 'Bearer test-token');
         expect(request.method, 'PUT');
         return http.Response('', 200);
       });
@@ -172,7 +216,9 @@ void main() {
         httpClient: requestClient((request) async {
           if (request.url.path.endsWith('reserve_meal')) return json(null);
           if (request.url.path.endsWith('image-storage')) {
-            return json({'url': 'https://r2.example/upload'});
+            return json({
+              'url': 'https://supabase.example/functions/v1/image-storage',
+            });
           }
           commits++;
           return json({});
@@ -245,7 +291,7 @@ void main() {
     },
   );
 
-  for (final failure in ['quota', 'verification']) {
+  for (final failure in ['quota', 'verification', 'requests']) {
     test(
       '$failure failure preserves the local photo and prevents commit',
       () async {
@@ -270,7 +316,9 @@ void main() {
                 );
               }
               if (body['action'] == 'confirm') return json({'ok': false});
-              return json({'url': 'https://r2.example/upload'});
+              return json({
+                'url': 'https://supabase.example/functions/v1/image-storage',
+              });
             }
             commits++;
             return json({});
@@ -278,7 +326,7 @@ void main() {
         );
         final images = MockClient((request) async {
           puts++;
-          return http.Response('', 200);
+          return http.Response('', failure == 'requests' ? 429 : 200);
         });
         final cloud = GoogleCloud(client, MediaStore(), imageClient: images);
         try {
@@ -297,7 +345,11 @@ void main() {
                 (e) => e.message,
                 'message',
                 contains(
-                  failure == 'quota' ? 'Cloud storage is full' : 'verified',
+                  failure == 'quota'
+                      ? 'Cloud storage is full'
+                      : failure == 'requests'
+                      ? 'request limit'
+                      : 'verified',
                 ),
               ),
             ),
