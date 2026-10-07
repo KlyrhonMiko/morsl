@@ -26,6 +26,25 @@ Each detected dish gets its own
 transparent mask and independent placement.
 Automatic dish masks retain food inside the dish outline. Enclosed gaps are
 filled; sparse or photo-edge-clipped rims use a convex outline fallback.
+Automatic extraction also runs a `food` prompt on the same encoded photo.
+Only dishes with meaningful food overlap inside their completed outline are
+kept; empty plates, utensils-only plates, and incidental empty rims are omitted.
+Narrow slivers at the photo border are rejected before outline completion,
+and smaller masks contained within a full dish are suppressed even when their
+confidence is higher. Food-filled dishes may still touch the photo edge.
+Small dishes clipped at two adjacent photo edges are omitted when their visible
+mask is at most 12% of the photo and at most a quarter of the largest serving.
+This composition filter also applies to food-filled background bowls. Fully
+visible sides, dishes clipped at only one edge, and the largest dish survive.
+Masks within 0.3% of the photo edge count as clipped to allow small model gaps.
+Serving boards with food directly on them are detected separately and saved as one serving,
+including meat and bowls resting on the board. Bowls or food extending slightly
+beyond its edge are retained; nearby dishes stay separate. Empty boards still
+require food evidence and are omitted. Food contained entirely in bowls cannot
+promote a surrounding table or board into a combined serving; those bowls stay
+separate. This depends on SAM3 recognizing the board and food correctly.
+If food is missed (for example pale food or soup), automatic extraction may
+omit its dish; **Select a plate** remains available for manual recovery.
 Detections smaller than 1% of the uploaded image are omitted to reduce tiny
 background dishes and screenshot gallery thumbnails. Very small dishes or
 irregular, overlapping outlines may still need the manual edge tools.
@@ -107,9 +126,10 @@ illustration and local locations; cloud actions explain their configuration stat
 
 - Riverpod app dependency/state ownership; Drift/SQLite transactions and separate
   meal, asset, personal-memory, job, sync, evaluation, preference, and event data.
-- Unsynced original photos in application documents, never large SQLite image blobs.
-  Backed-up originals and finished cutouts use private R2 and a 100 MiB temporary
-  device cache; restore downloads metadata and fetches images on demand.
+- Original photos and finished cutouts stay in application documents after backup,
+  never as large SQLite image blobs. Private R2 provides backup and recovery;
+  owned meals restore missing images into permanent local storage. Shared images
+  use a separate 100 MiB temporary cache and download on demand.
   Thumbnails are generated away from the UI thread. Imports use available EXIF
   capture dates/GPS and offer correction. Lost Android picker results are recovered.
 - Separate plate masks, normalized source regions, independent placement, and
@@ -161,7 +181,7 @@ and `stages_ms`, with `status` and an error type for failed operations.
   each worker a fresh `worker_id` and request counter. Its small `total_ms` is
   only hook time, not snapshot restoration or container provisioning time.
   `snapshot_id` links workers that share the captured model state.
-- `segment`: image decoding, image encoder, each plate/bowl/food-tray prompt,
+- `segment`: image decoding, image encoder, each plate/bowl/food-tray/serving-board/food prompt,
   transfers to CPU, mask cleanup, and mask encoding (including deduplication).
   `first_request` identifies the first extraction on a worker.
 - `remote_call`: API-to-worker elapsed time, including queueing, any cold

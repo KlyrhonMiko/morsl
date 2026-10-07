@@ -152,10 +152,18 @@ export function referencedKeys(asset, memories) {
   for (const photo of asset.photos ?? []) {
     if (photo.original) refs.add(photo.original);
   }
-  for (const photo of asset.photos ?? []) {
-    if (photo.original) refs.add(photo.original);
-  }
   for (const memory of memories) {
+    // Before the meal-photos migration, only the uploader's personal record
+    // stores extra source references. Other members cannot authorize sources
+    // by adding references to their own presentation data.
+    if (asset.photos == null && asset.uploader && memory.user_id === asset.uploader) {
+      for (const photo of memory.data?.photos ?? []) {
+        if (keyPattern.test(photo.original ?? "") &&
+            photo.original.split("/")[0] === asset.original?.split("/")[0]) {
+          refs.add(photo.original);
+        }
+      }
+    }
     for (const plate of memory.data?.plates ?? []) {
       if (plate.cloudPath) refs.add(plate.cloudPath);
     }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -308,11 +310,12 @@ class CloudService {
   Future<void> deleteMeal(String meal) async {
     requireGoogleAccount();
     await client!.rpc('delete_meal', params: {'meal': meal});
-    try {
-      await cleanupImages(meal: meal);
-    } catch (_) {
-      /* Daily sweep retries after the durable deletion. */
-    }
+    // The meal is already deleted. Storage cleanup must not hold the UI open.
+    unawaited(
+      cleanupImages(meal: meal).catchError((Object _) {
+        /* Daily sweep retries after the durable deletion. */
+      }),
+    );
   }
 
   Future<void> removeAsset(Memory memory) async {

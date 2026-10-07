@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
@@ -93,6 +95,40 @@ class MediaStore {
     } finally {
       await lease.close();
     }
+  }
+
+  /// Restored backups are durable app files, independent of the image cache.
+  Future<String> restoreBackup(
+    String ref,
+    String scope,
+    String id, {
+    String? existing,
+  }) async {
+    if (!isRemote(ref)) return ref;
+    if (existing != null &&
+        existing.isNotEmpty &&
+        !isRemote(existing) &&
+        await File(existing).exists()) {
+      final expected = RegExp(
+        r'-([0-9a-f]{64})\.',
+      ).firstMatch(p.basename(key(ref)))?.group(1);
+      if (expected == null ||
+          sha256.convert(await File(existing).readAsBytes()).toString() ==
+              expected) {
+        return existing;
+      }
+    }
+    final dir = await directory(scope, id);
+    final digest = sha256.convert(utf8.encode(ref));
+    final file = File(
+      p.join(dir.path, 'backup-$digest${p.extension(key(ref))}'),
+    );
+    if (await file.exists()) return file.path;
+    final bytes = await read(ref);
+    final partial = File('${file.path}.partial');
+    await partial.writeAsBytes(bytes, flush: true);
+    await partial.rename(file.path);
+    return file.path;
   }
 
   /// Call only after committed cloud restore, with no pending edits/jobs.

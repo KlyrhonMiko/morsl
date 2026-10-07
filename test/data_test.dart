@@ -11,6 +11,7 @@ import 'package:morsl/data/models.dart';
 import 'package:morsl/data/repository.dart';
 import 'package:morsl/services/cloud.dart';
 import 'package:morsl/services/media.dart';
+import 'package:morsl/services/image_cache.dart';
 import 'package:morsl/services/plates.dart';
 import 'package:morsl/services/reminders.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -60,7 +61,8 @@ class FakeRemoteEngine extends FakeEngine implements RemoteSegmentationEngine {
 }
 
 class TestMedia extends MediaStore {
-  TestMedia(this.root);
+  TestMedia(this.root)
+    : super(cache: ImageDiskCache(root: Directory('${root.path}/image-cache')));
   final Directory root;
   @override
   Future<Directory> directory(String scope, String id) async =>
@@ -108,6 +110,9 @@ class ReferenceCloud extends FakeCloud {
     await duringPull?.call();
     return (await super.pull(account)).map((memory) {
       memory.original = MediaStore.remote('${memory.id}/original.jpg');
+      for (final photo in memory.photos) {
+        photo.original = MediaStore.remote('${memory.id}/${photo.id}.jpg');
+      }
       memory.plates = memory.plates
           .map(
             (plate) =>
@@ -683,28 +688,73 @@ void main() {
     },
   );
   test(
-    'successful cloud restore commits references before removing backed-up document files',
+    'successful backup keeps original photos and cutouts available locally',
     () async {
       final dir = await media.directory('account-a', 'meal-1');
       final source = await File(
         '${dir.path}/original.jpg',
       ).writeAsBytes([1, 2, 3]);
       final cutout = await File('${dir.path}/plate.png').writeAsBytes([4, 5]);
+      final extra = await File('${dir.path}/extra.jpg').writeAsBytes([6, 7]);
       final memory = meal('account-a')
         ..original = source.path
         ..job = JobStatus.ready
-        ..plates = [Plate(id: 'plate', mask: 'mask', path: cutout.path)];
+        ..plates = [Plate(id: 'plate', mask: 'mask', path: cutout.path)]
+        ..photos = [
+          MealPhoto(id: 'extra', original: extra.path, job: JobStatus.ready),
+        ];
       await repo.save(memory);
       final cloud = ReferenceCloud(null, media)..failPush = false;
       final app = controller(FakeEngine(), cloud);
       await app.sync(manual: true);
       expect(app.syncError, null);
       final restored = (await repo.list('account-a')).single;
-      expect(MediaStore.isRemote(restored.original), true);
-      expect(MediaStore.isRemote(restored.plates.single.path), true);
+      expect(restored.original, source.path);
+      expect(restored.plates.single.path, cutout.path);
+      expect(restored.photos.single.original, extra.path);
       expect(await repo.pending('account-a'), isEmpty);
-      expect(await source.exists(), false);
-      expect(await cutout.exists(), false);
+      expect(await source.exists(), true);
+      expect(await cutout.exists(), true);
+      expect(await extra.exists(), true);
+      cloud.failPull = true;
+      await app.sync(manual: true);
+      final offline = (await repo.list('account-a')).single;
+      expect(await File(offline.original).readAsBytes(), [1, 2, 3]);
+      expect(await File(offline.photos.single.original).readAsBytes(), [6, 7]);
+      app.dispose();
+    },
+  );
+  test(
+    'cloud-only owned meals restore photos into durable local storage',
+    () async {
+      final fixture = await File(
+        '${temp.path}/backup.jpg',
+      ).writeAsBytes([8, 9]);
+      final memory = meal('account-a')
+        ..job = JobStatus.ready
+        ..photos = [
+          MealPhoto(id: 'extra', original: fixture.path, job: JobStatus.ready),
+        ];
+      final cloud = ReferenceCloud(null, media)..failPush = false;
+      cloud.remote[memory.id] = memory;
+      var downloads = 0;
+      media.download = (_) async {
+        downloads++;
+        return fixture.readAsBytes();
+      };
+      final app = controller(FakeEngine(), cloud);
+      await app.sync(manual: true);
+      expect(app.syncError, null);
+      final restored = (await repo.list('account-a')).single;
+      expect(MediaStore.isRemote(restored.original), false);
+      expect(MediaStore.isRemote(restored.photos.single.original), false);
+      expect(await File(restored.original).readAsBytes(), [8, 9]);
+      expect(await File(restored.photos.single.original).readAsBytes(), [8, 9]);
+      expect(downloads, 2);
+      media.download = (_) async => throw StateError('offline');
+      await app.sync(manual: true);
+      expect(app.syncError, null);
+      expect((await repo.list('account-a')).single.original, restored.original);
       app.dispose();
     },
   );

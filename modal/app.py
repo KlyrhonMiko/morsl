@@ -73,7 +73,7 @@ class SAM3Segmentation:
                     # image features local so the snapshot holds only the model.
                     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                         state = self.processor.set_image(Image.new("RGB", (1600, 1200)))
-                        for prompt in ("plate", "bowl", "food tray"):
+                        for prompt in ("plate", "bowl", "food tray", "serving board", "food"):
                             self.processor.reset_all_prompts(state)
                             self.processor.set_text_prompt(state=state, prompt=prompt)
                     del state
@@ -104,14 +104,19 @@ class SAM3Segmentation:
                     first_request=self.request_count == 1) as timing:
             with timing.stage("imports"):
                 import torch
-                from image_contract import encode_plates, open_photo, prepare_dish_candidates
+                from image_contract import (encode_plates, open_photo,
+                                            prepare_dish_candidates, prepare_serving_boards,
+                                            group_serving_boards)
             with timing.stage("image_decode"):
                 photo = open_photo(data)
             candidates = []
+            food_candidates = []
+            board_candidates = []
+            vessel_candidates = []
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                 with timing.stage("image_encoder", torch.cuda.synchronize):
                     state = self.processor.set_image(photo)
-                for prompt in ("plate", "bowl", "food tray"):
+                for prompt in ("plate", "bowl", "food tray", "serving board", "food"):
                     with timing.stage("prompt_" + prompt.replace(" ", "_"),
                                       torch.cuda.synchronize):
                         self.processor.reset_all_prompts(state)
@@ -120,13 +125,35 @@ class SAM3Segmentation:
                         masks = output["masks"].detach().cpu().numpy()
                         # Autocast scores may be bfloat16, which NumPy cannot represent.
                         scores = output["scores"].detach().float().cpu().numpy()
-                        candidates.extend((mask[0], float(score))
-                                          for mask, score in zip(masks, scores))
+                        detected = [(mask[0], float(score))
+                                    for mask, score in zip(masks, scores)]
+                        if prompt == "food":
+                            food_candidates.extend(detected)
+                        elif prompt == "serving board":
+                            board_candidates.extend(detected)
+                        else:
+                            candidates.extend(detected)
+                            if prompt in ("plate", "bowl"):
+                                vessel_candidates.extend(detected)
             with timing.stage("mask_cleanup"):
-                completed = prepare_dish_candidates(candidates, *photo.size)
+                completed = prepare_dish_candidates(
+                    candidates, *photo.size, food_candidates=food_candidates,
+                )
+                vessels = (prepare_dish_candidates(vessel_candidates, *photo.size)
+                           if board_candidates else [])
+                boards = prepare_serving_boards(
+                    board_candidates, *photo.size, food_candidates, vessels,
+                )
+                if boards:
+                    components = vessels + [(mask, score) for mask, score in food_candidates
+                                             if score >= 0.5]
+                    completed = group_serving_boards(completed, boards, components)
             with timing.stage("mask_encode"):
                 result = encode_plates(completed, *photo.size)
             timing.record.update(image_size=list(photo.size), candidates=len(candidates),
+                                 food_candidates=len(food_candidates),
+                                 board_candidates=len(board_candidates),
+                                 serving_boards=len(boards),
                                  plates=len(result["plates"]))
             return result
 

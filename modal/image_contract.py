@@ -5,12 +5,17 @@ import warnings
 
 import numpy as np
 from PIL import Image, ImageDraw, UnidentifiedImageError
-from scipy.ndimage import binary_fill_holes
+from scipy.ndimage import binary_erosion, binary_fill_holes
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_EDGE = 1600
 MAX_PLATES = 12
 MIN_DISH_AREA = 0.01
+MIN_FOOD_COVERAGE = 0.01
+MIN_FOOD_CONTAINMENT = 0.5
+# Corner-clipped dishes can contain real food yet be incidental to the photo.
+MAX_CORNER_DISH_AREA = 0.12
+MAX_CORNER_DISH_RELATIVE_AREA = 0.25
 
 
 def dish_silhouette(mask):
@@ -84,8 +89,22 @@ def _complete_dish_crop(mask):
     return filled
 
 
-def prepare_dish_candidates(candidates, width, height):
-    """Complete silhouettes before deduplication and discard tiny detections."""
+def prepare_dish_candidates(candidates, width, height, food_candidates=None):
+    """Keep substantial dishes supported by food inside their completed outline.
+
+    None preserves geometry-only cleanup for callers without food inference.
+    The GPU worker always supplies food candidates, including an empty list;
+    no food evidence must never fall back to accepting empty dishes.
+    """
+    foods = None
+    if food_candidates is not None:
+        foods = []
+        for mask, score in food_candidates:
+            mask = np.asarray(mask, dtype=bool)
+            if mask.shape != (height, width) or not np.isfinite(score):
+                raise ValueError("Model mask dimensions do not match the image")
+            if score >= 0.5 and mask.any():
+                foods.append((mask, int(mask.sum())))
     completed = []
     for mask, score in candidates:
         mask = np.asarray(mask, dtype=bool)
@@ -99,13 +118,89 @@ def prepare_dish_candidates(candidates, width, height):
         top, bottom, left, right = bounds
         if (right - left) * (bottom - top) < width * height * MIN_DISH_AREA:
             continue
+        # Do not turn a sliver at the photo border into a completed dish.
+        touches_edge = left == 0 or top == 0 or right == width or bottom == height
+        if touches_edge and min(right - left, bottom - top) < 0.12 * max(
+                right - left, bottom - top):
+            continue
         silhouette = _dish_silhouette_from_bounds(mask, bounds)
         # A screenshot's gallery thumbnails otherwise become extra dishes.
         # Measure the complete dish, so thin rims of large plates survive.
         if silhouette.sum() < width * height * MIN_DISH_AREA:
             continue
+        if foods is not None:
+            # Food must be inside the dish, rather than merely touching a rim.
+            # Erode only the crop; edge-clipped, food-filled dishes still survive.
+            crop = silhouette[top:bottom, left:right]
+            inset = max(1, min(8, round(min(crop.shape) * 0.01)))
+            interior = binary_erosion(crop, iterations=inset)
+            interior_area = int(interior.sum())
+            supported = any(
+                (overlap := int(np.count_nonzero(
+                    interior & food[top:bottom, left:right])))
+                >= max(1, interior_area * MIN_FOOD_COVERAGE)
+                and overlap >= food_area * MIN_FOOD_CONTAINMENT
+                for food, food_area in foods
+            )
+            if not supported:
+                continue
         completed.append((silhouette, score))
     return completed
+
+
+def prepare_serving_boards(candidates, width, height, food_candidates, vessels):
+    """A board may group bowls only if food is also served directly on it.
+
+    A wooden table falsely matching the board prompt must not be promoted
+    merely because it surrounds food-filled bowls. Favor separate bowls when
+    all food evidence is contained in vessels.
+    """
+    covered = np.zeros((height, width), bool)
+    for vessel, _ in vessels:
+        covered |= vessel
+    direct_food = []
+    for mask, score in food_candidates:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.shape != (height, width) or not np.isfinite(score):
+            raise ValueError("Model mask dimensions do not match the image")
+        area = int(mask.sum())
+        if score >= 0.5 and area:
+            exposed = mask & ~covered
+            if exposed.sum() >= area * 0.5:
+                direct_food.append((exposed, score))
+    return prepare_dish_candidates(candidates, width, height, food_candidates=direct_food)
+
+
+def group_serving_boards(dishes, boards, components):
+    """Keep each food-bearing board and its contents as a single serving.
+
+    Association uses the original completed board, never a growing union, so
+    nearby dishes cannot pull unrelated dishes into the serving. Components
+    may include condiment bowls omitted by standalone food filtering.
+    """
+    grouped = []
+    assigned = set()
+    for board, score in sorted(boards, key=lambda item: item[1], reverse=True):
+        # Board prompts can produce duplicates too; avoid two copies of a meal.
+        if any(np.count_nonzero(board & other) / np.count_nonzero(board | other)
+               > 0.7 for other, _ in grouped):
+            continue
+        outline = board.copy()
+        board_area = int(board.sum())
+        for component, _ in components:
+            area = int(component.sum())
+            if 0 < area <= board_area * 0.8 and np.count_nonzero(
+                    component & board) >= area * 0.6:
+                # Keep bowls/food protruding over the edge; never convex-fill
+                # the combined serving, which would capture the table between.
+                outline |= component
+        for index, (dish, _) in enumerate(dishes):
+            area = int(dish.sum())
+            if area and np.count_nonzero(dish & board) >= area * 0.6:
+                outline |= dish
+                assigned.add(index)
+        grouped.append((outline, score))
+    return grouped + [dish for index, dish in enumerate(dishes) if index not in assigned]
 
 
 def open_photo(data):
@@ -126,12 +221,36 @@ def open_photo(data):
 def encode_plates(candidates, width, height):
     """Bounds come from occupied mask pixels. Suppress cross-prompt mask IoU duplicates."""
     plates, selected = [], []
-    for mask, score in sorted(candidates, key=lambda item: item[1], reverse=True):
+    valid = []
+    for mask, score in candidates:
         mask = np.asarray(mask, dtype=bool)
         if mask.shape != (height, width) or not np.isfinite(score):
             raise ValueError("Model mask dimensions do not match the image")
         if score < 0.5 or not mask.any():
             continue
+        valid.append((mask, score, int(mask.sum())))
+    # Apply after board grouping so the whole serving defines the main subject.
+    # Fully visible sides, single-edge dishes, and large clipped meals survive.
+    largest_area = max((area for _, _, area in valid), default=0)
+    retained = []
+    edge_x, edge_y = max(1, round(width * 0.003)), max(1, round(height * 0.003))
+    for mask, score, area in valid:
+        top, bottom, left, right = _mask_bounds(mask)
+        corner_clipped = ((left <= edge_x or right >= width - edge_x)
+                          and (top <= edge_y or bottom >= height - edge_y))
+        if (corner_clipped and area <= width * height * MAX_CORNER_DISH_AREA
+                and area <= largest_area * MAX_CORNER_DISH_RELATIVE_AREA):
+            continue
+        retained.append((mask, score, area))
+    valid = retained
+    # IoU alone misses a high-confidence rim fragment inside a full dish.
+    # Prefer the full dish regardless of fragment confidence. The area ratio
+    # keeps similarly sized, overlapping dishes out of this containment rule.
+    valid = [(mask, score, area) for mask, score, area in valid
+             if not any(other_area >= area * 2
+                        and np.count_nonzero(mask & other) >= area * 0.9
+                        for other, _, other_area in valid)]
+    for mask, score, _ in sorted(valid, key=lambda item: item[1], reverse=True):
         if any(np.count_nonzero(mask & other) / np.count_nonzero(mask | other)
                > 0.7 for other in selected):
             continue

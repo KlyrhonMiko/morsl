@@ -17,6 +17,7 @@ import 'cloud_cutouts.dart';
 import 'account_gate.dart';
 import 'cutout_status.dart';
 import 'plate_preview_pager.dart';
+import 'meal_photo_thumbnail.dart';
 
 class PlatingEditor extends ConsumerStatefulWidget {
   const PlatingEditor({super.key, required this.memory});
@@ -38,6 +39,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   String? selectedPlateId;
   String? selectedPhotoId;
   bool addingPhotos = false;
+  bool deleting = false;
   String get selectedOriginal => selectedPhotoId == null
       ? memory.original
       : memory.photos
@@ -437,6 +439,29 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     }
   }
 
+  Future<void> _deleteMeal() async {
+    if (deleting || !app.canMutate || app.scope != memory.scope) return;
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    debounce?.cancel();
+    setState(() => deleting = true);
+    try {
+      await saving;
+      if (!mounted || app.scope != memory.scope) return;
+      if (memory.scope != 'guest' && !memory.demo) {
+        await app.cloud.deleteMeal(memory.id);
+      }
+      await app.removeLocal(memory);
+      if (!mounted) return;
+      navigator.pop();
+      messenger.showSnackBar(const SnackBar(content: Text('Meal deleted.')));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => deleting = false);
+      message(context, 'Could not delete the meal. Please try again.');
+    }
+  }
+
   @override
   void dispose() {
     debounce?.cancel();
@@ -456,6 +481,26 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
             icon: Icons.lock_outline,
             title: 'This memory is no longer in this scrapbook.',
             message: 'Return to History to browse available memories.',
+          ),
+        )
+      : deleting
+      ? PopScope(
+          canPop: false,
+          child: Scaffold(
+            appBar: AppBar(
+              automaticallyImplyLeading: false,
+              title: const Text('Deleting meal…'),
+            ),
+            body: const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Deleting meal…'),
+                ],
+              ),
+            ),
           ),
         )
       : !app.canMutate
@@ -513,16 +558,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                       'Delete meal',
                     );
                     if (confirmed && context.mounted) {
-                      await guarded(context, () async {
-                        debounce?.cancel();
-                        if (memory.scope != 'guest' && !memory.demo) {
-                          await app.cloud.deleteMeal(memory.id);
-                        }
-                        await app.removeLocal(memory);
-                        if (context.mounted) {
-                          Navigator.of(context).pop();
-                        }
-                      });
+                      await _deleteMeal();
                     }
                   }
                   if (v == 'photo') {
@@ -767,50 +803,77 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
         style: const TextStyle(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
-      const SizedBox(height: 8),
       const Text(
         'Add every dish or angle from the same visit. Cutouts stay together.',
         style: TextStyle(color: Palette.muted, fontSize: 12),
       ),
       const SizedBox(height: 10),
-      SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (var i = 0; i < memory.originals.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ChoiceChip(
-                  label: Text(
-                    'Photo ${i + 1}',
-                    style: TextStyle(
-                      color:
-                          selectedPhotoId ==
-                              (i == 0 ? null : memory.photos[i - 1].id)
-                          ? Colors.white
-                          : Palette.ink,
-                    ),
-                  ),
-                  selected:
-                      selectedPhotoId ==
-                      (i == 0 ? null : memory.photos[i - 1].id),
-                  onSelected: (_) => setState(() {
-                    selectedPhotoId = i == 0 ? null : memory.photos[i - 1].id;
-                  }),
+      GridView.builder(
+        key: const ValueKey('meal-photo-grid'),
+        shrinkWrap: true,
+        primary: false,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 180,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+        ),
+        itemCount: memory.originals.length,
+        itemBuilder: (context, index) {
+          final photoId = index == 0 ? null : memory.photos[index - 1].id;
+          final selected = selectedPhotoId == photoId;
+          final radius = BorderRadius.circular(12);
+          return Semantics(
+            label: 'Photo ${index + 1}',
+            button: true,
+            selected: selected,
+            child: Material(
+              color: Palette.line,
+              borderRadius: radius,
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                key: ValueKey('meal-photo-${photoId ?? 'original'}'),
+                onTap: () => setState(() => selectedPhotoId = photoId),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    MealPhotoThumbnail(path: memory.originals[index]),
+                    if (selected) ...[
+                      IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: radius,
+                            border: Border.all(color: Palette.forest, width: 3),
+                          ),
+                        ),
+                      ),
+                      const Positioned(
+                        top: 8,
+                        right: 8,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Palette.forest,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(
+                              Icons.check_rounded,
+                              size: 18,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
-          ],
-        ),
+            ),
+          );
+        },
       ),
       const SizedBox(height: 10),
-      SizedBox(
-        height: 110,
-        width: 150,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: PlateImage(path: selectedOriginal),
-        ),
-      ),
       for (final photo in memory.photos.where((p) => p.job == JobStatus.failed))
         Padding(
           padding: const EdgeInsets.only(top: 8),

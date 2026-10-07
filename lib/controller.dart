@@ -711,6 +711,58 @@ class MorslController extends ChangeNotifier {
     minute: reminderMinute,
   );
 
+  Future<void> _restoreLocalBackup(Memory restored, Memory? previous) async {
+    if (!restored.ownsMeal || restored.original.isEmpty) return;
+    Future<String> local(String ref, String? existing) async {
+      try {
+        return await media.restoreBackup(
+          ref,
+          restored.scope,
+          restored.id,
+          existing: existing,
+        );
+      } catch (e) {
+        // Keep the backup reference so a later sync can finish restoring it.
+        syncError ??= 'Some backup photos could not be saved locally: $e';
+        return ref;
+      }
+    }
+
+    restored.original = await local(restored.original, previous?.original);
+    for (final photo in restored.photos) {
+      final before = previous?.photos
+          .where((p) => p.id == photo.id)
+          .firstOrNull;
+      photo.original = await local(photo.original, before?.original);
+    }
+    if (restored.thumbnail case final thumbnail?) {
+      restored.thumbnail = await local(thumbnail, previous?.thumbnail);
+    }
+    if (restored.cutout case final cutout?) {
+      restored.cutout = await local(
+        cutout,
+        restored.platesEdited == previous?.platesEdited
+            ? previous?.cutout
+            : null,
+      );
+    }
+    for (final plate in restored.plates) {
+      final before = previous?.plates
+          .where(
+            (p) =>
+                p.id == plate.id &&
+                p.mask == plate.mask &&
+                p.left == plate.left &&
+                p.top == plate.top &&
+                p.width == plate.width &&
+                p.height == plate.height &&
+                (p.cloudPath == null || p.cloudPath == plate.cloudPath),
+          )
+          .firstOrNull;
+      plate.path = await local(plate.path, before?.path);
+    }
+  }
+
   Future<void> sync({bool manual = false}) async {
     if (manual) requireGoogleAccount();
     if (!canMutate || !cloud.configured) return;
@@ -778,6 +830,16 @@ class MorslController extends ChangeNotifier {
             break;
           }
           Memory? previous;
+          final existing = (await repository.list(
+            account,
+          )).where((item) => item.id == m.id).firstOrNull;
+          if (existing?.job != JobStatus.processing &&
+              existing?.job != JobStatus.queued &&
+              !(await repository.pending(
+                account,
+              )).any((op) => op.entity == m.id)) {
+            await _restoreLocalBackup(m, existing);
+          }
           final applied = await repository.db.transaction(() async {
             if (scope != account) return false;
             final pending = await repository.pending(account);
@@ -807,17 +869,9 @@ class MorslController extends ChangeNotifier {
                 await media.revoke(ref);
               }
             }
-            // Commit cloud references before pruning files. Recheck pending edits
-            // while holding the repository lock so new durable edits remain safe.
-            if (!m.demo &&
-                (m.original.isEmpty ||
-                    (MediaStore.isRemote(m.original) &&
-                        m.photos.every(
-                          (photo) => MediaStore.isRemote(photo.original),
-                        ) &&
-                        m.plates.every(
-                          (plate) => MediaStore.isRemote(plate.path),
-                        )))) {
+            // Only an explicitly removed source can delete local media.
+            // Successful backup never evicts imported photos or cutouts.
+            if (!m.demo && m.original.isEmpty) {
               await repository.db.transaction(() async {
                 if (scope == account &&
                     !(await repository.pending(

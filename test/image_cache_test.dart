@@ -140,6 +140,26 @@ void main() {
     cache.release('failed');
   });
   test(
+    'restored backup stays local after cache eviction and offline restore',
+    () async {
+      final media = TemporaryMedia(root, cache);
+      var downloads = 0;
+      media.download = (_) async {
+        downloads++;
+        return Uint8List.fromList([1, 2, 3]);
+      };
+      final ref = MediaStore.remote('meal/original.jpg');
+      final saved = await media.restoreBackup(ref, 'user', 'meal');
+      expect(MediaStore.isRemote(saved), false);
+      expect(await File(saved).readAsBytes(), [1, 2, 3]);
+      await cache.remove('guest:$ref');
+      media.download = (_) async => throw StateError('offline');
+      expect(await media.restoreBackup(ref, 'user', 'meal'), saved);
+      expect(await File(saved).readAsBytes(), [1, 2, 3]);
+      expect(downloads, 1);
+    },
+  );
+  test(
     'revocation removes cached bytes and blocks reads until an authorized restore',
     () async {
       final media = TemporaryMedia(root, cache)..accountIdentity = () => 'user';

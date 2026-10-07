@@ -220,3 +220,30 @@ test("every additional meal photo stays authorized and retained by cleanup", () 
   assert.deepEqual(referencedKeys(asset, []), new Set([original, extra]));
   assert.deepEqual(referencedKeys(null, []), new Set());
 });
+
+test("legacy uploader photos download while foreign and member references stay denied", async () => {
+  const extras = ["b", "c", "d", "e", "f"].map((digit) =>
+    `${M}/${M}/r2/original-${digit.repeat(64)}.jpg`
+  );
+  const asset = { original, uploader: A };
+  const records = [{
+    user_id: A,
+    data: { photos: extras.map((original) => ({ original })) },
+  }, {
+    user_id: B,
+    data: { photos: [{ original: `${M}/${M}/r2/original-${"0".repeat(64)}.jpg` }] },
+  }];
+  const refs = referencedKeys(asset, records);
+  assert.deepEqual(refs, new Set([original, ...extras]));
+  const { request } = setup({ referencesForUser: async () => refs });
+  for (const key of [original, ...extras]) {
+    assert.equal((await request({ action: "download", key })).status, 200);
+  }
+  assert.equal((await request({ action: "download", key: records[1].data.photos[0].original })).status, 403);
+  assert.equal(referencedKeys(asset, [{
+    user_id: A,
+    data: { photos: [{ original: extras[0].replaceAll(M, B) }] },
+  }]).has(extras[0].replaceAll(M, B)), false);
+  assert.deepEqual(referencedKeys({ ...asset, photos: [] }, records), new Set([original]));
+  assert.equal(referencedKeys(null, records).size, 0);
+});
