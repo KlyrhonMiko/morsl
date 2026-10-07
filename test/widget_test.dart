@@ -25,6 +25,7 @@ import 'package:morsl/services/creations.dart';
 import 'package:morsl/ui/theme.dart';
 import 'package:morsl/ui/home.dart';
 import 'package:morsl/ui/map_screen.dart';
+import 'package:morsl/ui/tools.dart';
 
 class LocalTestTiles extends TileProvider {
   @override
@@ -161,6 +162,65 @@ void main() {
     overrides: [appProvider.overrideWithValue(app)],
     child: child,
   );
+
+  testWidgets('cutout notebook updates when SAM3 plates finish processing', (
+    tester,
+  ) async {
+    final memory = app.memories.first
+      ..cutout = null
+      ..job = JobStatus.processing;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: morslTheme(),
+        home: Scaffold(
+          body: EvaluationSheet(app: app, memory: memory),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Preparing cutouts…'), findsOneWidget);
+    final retry = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Processing…'),
+    );
+    expect(retry.onPressed, isNull);
+
+    final completed = memory.copy()
+      ..job = JobStatus.ready
+      ..plates = [
+        Plate(
+          id: 'dish-1',
+          path: 'assets/images/salad-cutout.png',
+          mask: solidPlateMask(),
+        ),
+        Plate(
+          id: 'dish-2',
+          path: 'assets/images/pasta-cutout.png',
+          mask: solidPlateMask(),
+        ),
+      ];
+    await tester.runAsync(() async {
+      await app.repository.save(completed, enqueue: false);
+      await app.reload();
+    });
+    await tester.pump();
+    expect(find.text('Preparing cutouts…'), findsNothing);
+    expect(find.text('Cutouts (2)'), findsOneWidget);
+    expect(find.byType(GridView), findsOneWidget);
+    expect(find.text('Retry cutout'), findsOneWidget);
+    final images = tester.widgetList<Image>(find.byType(Image));
+    expect(images.where((image) => image.image is FileImage).length, 3);
+
+    final single = completed.copy()..plates = [completed.plates.first];
+    await tester.runAsync(() async {
+      await app.repository.save(single, enqueue: false);
+      await app.reload();
+    });
+    await tester.pump();
+    expect(find.text('Cutout'), findsOneWidget);
+    expect(find.byType(GridView), findsNothing);
+    expect(find.text('No cutout available'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('editor shows processing feedback and removes it on completion', (
     tester,

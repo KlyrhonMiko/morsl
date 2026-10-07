@@ -443,6 +443,22 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
     m = widget.memory.copy();
     category = m.failureCategory;
     rating = m.rating;
+    widget.app.addListener(_refreshMemory);
+  }
+
+  void _refreshMemory() {
+    final updated = widget.app.memories
+        .where((memory) => memory.id == m.id && memory.scope == m.scope)
+        .firstOrNull;
+    if (updated != null && mounted) {
+      setState(() => m = updated.copy());
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.app.removeListener(_refreshMemory);
+    super.dispose();
   }
 
   @override
@@ -456,7 +472,7 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
           const SizedBox(height: 12),
           const Handwriting('A little imperfect is okay.', size: 35),
           const SizedBox(height: 12),
-          if (retrying) ...[
+          if (retrying || m.job == JobStatus.processing) ...[
             const CutoutStatus(job: JobStatus.processing, compact: true),
             const SizedBox(height: 12),
           ],
@@ -464,7 +480,15 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
             children: [
               Expanded(child: _preview(m.original, 'Original')),
               const SizedBox(width: 12),
-              Expanded(child: _preview(m.cutout, 'Cutout')),
+              Expanded(
+                child: _preview(
+                  m.plates.firstOrNull?.path ?? m.cutout,
+                  m.plates.length > 1
+                      ? 'Cutouts (${m.plates.length})'
+                      : 'Cutout',
+                  plates: m.plates,
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 14),
@@ -540,7 +564,7 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
             runSpacing: 10,
             children: [
               FilledButton.icon(
-                onPressed: retrying
+                onPressed: retrying || m.job == JobStatus.processing
                     ? null
                     : () async {
                         setState(() => retrying = true);
@@ -558,7 +582,11 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
                         }
                       },
                 icon: const Icon(Icons.refresh, size: 17),
-                label: Text(retrying ? 'Processing…' : 'Retry cutout'),
+                label: Text(
+                  retrying || m.job == JobStatus.processing
+                      ? 'Processing…'
+                      : 'Retry cutout',
+                ),
               ),
               TextButton.icon(
                 onPressed: () => guarded(context, () async {
@@ -577,7 +605,11 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
       ),
     ),
   );
-  Widget _preview(String? path, String label) => Column(
+  Widget _preview(
+    String? path,
+    String label, {
+    List<Plate> plates = const [],
+  }) => Column(
     children: [
       AspectRatio(
         aspectRatio: 1,
@@ -587,10 +619,26 @@ class _EvaluationSheetState extends State<EvaluationSheet> {
             color: Palette.sage,
             borderRadius: BorderRadius.circular(10),
           ),
-          child: path == null
-              ? const Center(
+          child: plates.length > 1
+              ? GridView.count(
+                  padding: const EdgeInsets.all(8),
+                  crossAxisCount: plates.length <= 4 ? 2 : 3,
+                  children: [
+                    for (final plate in plates)
+                      Image(
+                        image: mediaImage(plate.path),
+                        fit: BoxFit.contain,
+                        errorBuilder: (c, e, s) =>
+                            const Icon(Icons.broken_image_outlined),
+                      ),
+                  ],
+                )
+              : path == null
+              ? Center(
                   child: Text(
-                    'Original still ready\nto make a memory',
+                    m.job == JobStatus.processing || m.job == JobStatus.queued
+                        ? 'Preparing cutouts…'
+                        : 'No cutout available',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 11, color: Palette.muted),
                   ),
