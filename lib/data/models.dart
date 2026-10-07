@@ -10,6 +10,7 @@ class Plate {
     required this.mask,
     this.path = '',
     this.cloudPath,
+    this.photoId,
     this.left = 0,
     this.top = 0,
     this.width = 1,
@@ -23,10 +24,12 @@ class Plate {
   final String id;
   String mask, path;
   String? cloudPath;
+  String? photoId;
   double left, top, width, height, aspect, x, y, scale, rotation;
   Map<String, dynamic> toJson({bool local = true}) => {
     'id': id,
     'mask': mask,
+    if (photoId != null) 'photoId': photoId,
     if (cloudPath != null) 'cloudPath': cloudPath,
     if (local) 'path': path,
     'left': left,
@@ -45,6 +48,7 @@ class Plate {
     mask: j['mask'],
     path: j['path'] ?? '',
     cloudPath: j['cloudPath'],
+    photoId: j['photoId'],
     left: (j['left'] as num?)?.toDouble() ?? 0,
     top: (j['top'] as num?)?.toDouble() ?? 0,
     width: (j['width'] as num?)?.toDouble() ?? 1,
@@ -54,6 +58,32 @@ class Plate {
     y: (j['y'] as num?)?.toDouble() ?? .15,
     scale: (j['scale'] as num?)?.toDouble() ?? .6,
     rotation: (j['rotation'] as num?)?.toDouble() ?? 0,
+  );
+}
+
+/// Additional source photos belong to the same meal, with independent jobs.
+class MealPhoto {
+  MealPhoto({
+    required this.id,
+    required this.original,
+    this.job = JobStatus.queued,
+    this.error,
+  });
+  final String id;
+  String original;
+  JobStatus job;
+  String? error;
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'original': original,
+    'job': job.name,
+    'error': error,
+  };
+  factory MealPhoto.fromJson(Map<String, dynamic> json) => MealPhoto(
+    id: json['id'],
+    original: json['original'],
+    job: JobStatus.values.byName(json['job'] ?? 'queued'),
+    error: json['error'],
   );
 }
 
@@ -100,6 +130,8 @@ class Memory {
     this.memoryRevision = 0,
     this.demo = false,
     this.plateReviews = const {},
+    this.photos = const [],
+    this.originalProcessed = false,
   });
 
   final String id;
@@ -124,6 +156,12 @@ class Memory {
   int? durationMs;
   int mealRevision, memoryRevision;
   Map<String, PlateReview> plateReviews;
+  List<MealPhoto> photos;
+  bool originalProcessed;
+  List<String> get originals => [original, ...photos.map((p) => p.original)];
+  String sourceFor(Plate plate) => plate.photoId == null
+      ? original
+      : photos.where((p) => p.id == plate.photoId).first.original;
   bool get hasLocation =>
       locationConfirmed && latitude != null && longitude != null;
   bool get ownsMeal => creator == null || creator == scope;
@@ -144,6 +182,8 @@ class Memory {
     'assetId': assetId,
     'createdAt': createdAt.toIso8601String(),
     'original': original,
+    'photos': photos.map((p) => p.toJson()).toList(),
+    'originalProcessed': originalProcessed,
     'thumbnail': thumbnail,
     'cutout': cutout,
     'plates': plates.map((plate) => plate.toJson()).toList(),
@@ -191,6 +231,11 @@ class Memory {
     assetId: j['assetId'],
     createdAt: DateTime.parse(j['createdAt']),
     original: j['original'],
+    photos: (j['photos'] as List? ?? [])
+        .map((p) => MealPhoto.fromJson(Map<String, dynamic>.from(p)))
+        .toList(),
+    originalProcessed:
+        j['originalProcessed'] ?? (j['job'] == 'ready' || j['job'] == 'failed'),
     thumbnail: j['thumbnail'],
     cutout: j['cutout'],
     plates: (j['plates'] as List? ?? [])

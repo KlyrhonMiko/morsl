@@ -149,6 +149,12 @@ export function referencedKeys(asset, memories) {
   for (const key of ["original", "thumbnail", "cutout"]) {
     if (asset[key]) refs.add(asset[key]);
   }
+  for (const photo of asset.photos ?? []) {
+    if (photo.original) refs.add(photo.original);
+  }
+  for (const photo of asset.photos ?? []) {
+    if (photo.original) refs.add(photo.original);
+  }
   for (const memory of memories) {
     for (const plate of memory.data?.plates ?? []) {
       if (plate.cloudPath) refs.add(plate.cloudPath);

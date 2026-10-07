@@ -50,7 +50,7 @@ Deno.serve(createImageHandler({
   referencesForUser: async (token: string, user: string, meal: string) => {
     const client = userClient(token);
     const { data: asset, error } = await client.from("meal_assets").select(
-      "original,thumbnail,cutout",
+      "original,thumbnail,cutout,photos",
     ).eq("meal_id", meal).maybeSingle();
     if (error) throw error;
     const { data: memories, error: memoryError } = await client.from(
@@ -103,7 +103,7 @@ Deno.serve(createImageHandler({
       }
       const { data: asset, error: assetError } = await client.from(
         "meal_assets",
-      ).select("original,thumbnail,cutout").eq("meal_id", meal).maybeSingle();
+      ).select("original,thumbnail,cutout,photos").eq("meal_id", meal).maybeSingle();
       const { data: memories, error: memoryError } = await client.from(
         "personal_memories",
       ).select("data").eq("meal_id", meal);

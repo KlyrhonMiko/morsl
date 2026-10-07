@@ -6,6 +6,7 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+
 import 'image_cache.dart';
 
 export 'cloud_segmentation.dart';
@@ -101,7 +102,7 @@ class MediaStore {
         _localPins.keys.any((path) => p.isWithin(dir.path, path))) {
       return;
     }
-    await for (final entity in dir.list(followLinks: false)) {
+    await for (final entity in dir.list(recursive: true, followLinks: false)) {
       if (entity is File && !_localPins.containsKey(entity.path)) {
         try {
           await entity.delete();
@@ -114,9 +115,8 @@ class MediaStore {
 
   Future<Directory> directory(String scope, String id) async {
     final root = await getApplicationDocumentsDirectory();
-    return Directory(
-      p.join(root.path, 'morsl', scope, id),
-    ).create(recursive: true);
+    return Directory(p.join(root.path, 'morsl', scope, id))
+        .create(recursive: true);
   }
 
   Future<String> preserve(XFile photo, String scope, String id) async {

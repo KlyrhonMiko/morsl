@@ -217,6 +217,89 @@ void main() {
       );
 
   test(
+    'multiple photos create one durable meal and cutouts use their own source',
+    () async {
+      final first = File('${temp.path}/first.png');
+      final second = File('${temp.path}/second.png');
+      await first.writeAsBytes(img.encodePng(img.Image(width: 4, height: 4)));
+      await second.writeAsBytes(img.encodePng(img.Image(width: 8, height: 8)));
+      final app = controller(FakePlateEngine(), TestGoogleCloud(null, media));
+      app.active = false;
+      final memory = await app.importPhotos([
+        XFile(first.path),
+        XFile(second.path),
+      ]);
+      expect(await repo.list('guest'), hasLength(1));
+      final saved = (await repo.list('guest')).single;
+      expect(saved.originals, hasLength(2));
+      expect(saved.original, isNot(saved.photos.single.original));
+      expect(
+        await File(saved.original).readAsBytes(),
+        await first.readAsBytes(),
+      );
+      expect(
+        await File(saved.photos.single.original).readAsBytes(),
+        await second.readAsBytes(),
+      );
+      app.active = true;
+      await app.processQueue();
+      final processed = (await repo.list('guest')).single;
+      expect(processed.id, memory.id);
+      expect(processed.job, JobStatus.ready);
+      expect(processed.plates, hasLength(2));
+      expect(processed.plates.map((p) => p.id).toSet(), hasLength(2));
+      for (final plate in processed.plates) {
+        expect(plate.path, processed.sourceFor(plate));
+      }
+      expect(
+        processed.copy().sourceFor(processed.plates.last),
+        processed.photos.single.original,
+      );
+      app.dispose();
+    },
+  );
+
+  test(
+    'new photo processing preserves existing edited cutouts and retries failures',
+    () async {
+      final original = File('${temp.path}/original.png');
+      await original.writeAsBytes(
+        img.encodePng(img.Image(width: 4, height: 4)),
+      );
+      final memory = meal('guest')
+        ..original = original.path
+        ..originalProcessed = true
+        ..platesEdited = true
+        ..plates = [
+          Plate(id: 'hand-edited', mask: solidPlateMask(), path: original.path),
+        ]
+        ..photos = [
+          MealPhoto(id: 'new-photo', original: '${temp.path}/missing.png'),
+        ];
+      await repo.save(memory);
+      final app = controller(
+        FakeEngine()..fails = false,
+        TestGoogleCloud(null, media),
+      );
+      await app.processQueue();
+      var saved = (await repo.list('guest')).single;
+      expect(saved.job, JobStatus.failed);
+      expect(saved.plates.single.id, 'hand-edited');
+      expect(saved.photos.single.job, JobStatus.failed);
+      await File(
+        saved.photos.single.original,
+      ).writeAsBytes(await original.readAsBytes());
+      await app.retry(saved);
+      saved = (await repo.list('guest')).single;
+      expect(saved.job, JobStatus.ready);
+      expect(saved.plates.map((p) => p.id), contains('hand-edited'));
+      expect(saved.plates, hasLength(2));
+      expect(saved.photos.single.job, JobStatus.ready);
+      app.dispose();
+    },
+  );
+
+  test(
     'startup loads saved meals when the account is restored during setup',
     () async {
       final saved = meal('account-a')

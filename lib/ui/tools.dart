@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:share_plus/share_plus.dart';
+
 import 'geoapify_attribution.dart';
 
 import '../controller.dart';
@@ -90,7 +91,9 @@ Future<void> showCapture(
       app.navigate(2);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Photo saved in Drafts. Enjoy your meal.'),
+          content: Text(
+            '${m.originals.length == 1 ? 'Photo' : '${m.originals.length} photos'} saved in Drafts. Enjoy your meal.',
+          ),
           action: SnackBarAction(
             label: 'Edit now',
             onPressed: () {
@@ -128,7 +131,7 @@ class _CaptureSheetState extends State<CaptureSheet> {
           const Handwriting('What’s on your table?', size: 36),
           const SizedBox(height: 12),
           const Text(
-            'Snap your meal, then enjoy it. We’ll save a draft and generate cutouts so you can edit later.',
+            'Snap your meal or choose several photos from the same visit. We’ll save them together and generate cutouts so you can edit later.',
             style: TextStyle(color: Palette.muted),
           ),
           const SizedBox(height: 20),

@@ -213,3 +213,10 @@ test("never returns a signed URL on backend failure", async () => {
   assert.equal(signed.length, 0);
   assert.equal((await response.text()).includes("private credential"), false);
 });
+
+test("every additional meal photo stays authorized and retained by cleanup", () => {
+  const extra = `${M}/${M}/r2/original-${"b".repeat(64)}.jpg`;
+  const asset = { original, photos: [{ id: "second", original: extra }] };
+  assert.deepEqual(referencedKeys(asset, []), new Set([original, extra]));
+  assert.deepEqual(referencedKeys(null, []), new Set());
+});

@@ -254,16 +254,15 @@ class MorslController extends ChangeNotifier {
   Future<Memory?> capture(ImageSource source, {bool locate = false}) async {
     requireGoogleAccount();
     final account = scope;
-    final photo = await ImagePicker().pickImage(
-      source: source,
-      imageQuality: 95,
-    );
-    if (photo == null) {
+    final photos = source == ImageSource.gallery
+        ? await ImagePicker().pickMultiImage(imageQuality: 95)
+        : [?await ImagePicker().pickImage(source: source, imageQuality: 95)];
+    if (photos.isEmpty) {
       return null;
     }
     if (scope != account) throw StateError('Account changed during capture.');
-    return importPhoto(
-      photo,
+    return importPhotos(
+      photos,
       locate: locate,
       readMetadata: source == ImageSource.gallery,
     );
@@ -273,11 +272,28 @@ class MorslController extends ChangeNotifier {
     XFile photo, {
     bool locate = false,
     bool readMetadata = false,
+  }) => importPhotos([photo], locate: locate, readMetadata: readMetadata);
+
+  Future<Memory> importPhotos(
+    List<XFile> photos, {
+    bool locate = false,
+    bool readMetadata = false,
   }) async {
+    if (photos.isEmpty) throw ArgumentError('Choose at least one photo.');
     requireGoogleAccount();
     final account = scope;
     final id = const Uuid().v4();
-    final original = await media.preserve(photo, account, id);
+    final original = await media.preserve(photos.first, account, id);
+    final additional = <MealPhoto>[];
+    for (final photo in photos.skip(1)) {
+      final photoId = const Uuid().v4();
+      additional.add(
+        MealPhoto(
+          id: photoId,
+          original: await media.preserve(photo, account, '$id/$photoId'),
+        ),
+      );
+    }
     requireGoogleAccount();
     if (scope != account) throw StateError('Account changed during import.');
     final m = Memory(
@@ -287,6 +303,7 @@ class MorslController extends ChangeNotifier {
       creator: cloud.account,
       createdAt: DateTime.now(),
       original: original,
+      photos: additional,
       useOriginal: false,
     );
     // The first database commit precedes all optional work.
@@ -311,8 +328,52 @@ class MorslController extends ChangeNotifier {
       return;
     }
     final lost = await ImagePicker().retrieveLostData();
-    for (final file in lost.files ?? <XFile>[]) {
-      await importPhoto(file);
+    if (lost.files?.isNotEmpty == true) {
+      await importPhotos(lost.files!);
+    }
+  }
+
+  Future<void> addPhotos(Memory memory, ImageSource source) async {
+    requireGoogleAccount(memory);
+    if (!memory.ownsMeal) {
+      throw StateError('Only the meal creator can add photos.');
+    }
+    final account = scope;
+    final picked = source == ImageSource.gallery
+        ? await ImagePicker().pickMultiImage(imageQuality: 95)
+        : [?await ImagePicker().pickImage(source: source, imageQuality: 95)];
+    if (picked.isEmpty) return;
+    await media.beginWork(account, memory.id);
+    try {
+      final added = <MealPhoto>[];
+      for (final photo in picked) {
+        final photoId = const Uuid().v4();
+        added.add(
+          MealPhoto(
+            id: photoId,
+            original: await media.preserve(
+              photo,
+              account,
+              '${memory.id}/$photoId',
+            ),
+          ),
+        );
+      }
+      requireGoogleAccount(memory);
+      final updated = await repository.mutate(memory.id, account, (current) {
+        if (current.job == JobStatus.ready || current.job == JobStatus.failed) {
+          current.originalProcessed = true;
+        }
+        current.photos = [...current.photos, ...added];
+        current.job = JobStatus.queued;
+      });
+      if (updated == null) {
+        throw StateError('This meal is no longer available.');
+      }
+      await reload();
+      unawaited(processQueue());
+    } finally {
+      await media.endWork(account, memory.id);
     }
   }
 
@@ -416,25 +477,73 @@ class MorslController extends ChangeNotifier {
         final watch = Stopwatch()..start();
         String? output, error;
         List<Plate>? plates;
+        final extraPlates = <Plate>[];
+        final photoResults = <String, (JobStatus, String?)>{};
         MediaLease? source;
         try {
-          source = await media.acquire(m.original);
           final dir = await media.directory(m.scope, m.id);
-          if (engine case MultiSubjectSegmentationEngine multi) {
-            plates = await multi.subjects(source.file.path, dir.path);
-            if (plates.isEmpty) {
-              error = 'No separate plates found. Select a plate to cut it out.';
+          if (!m.originalProcessed) {
+            source = await media.acquire(m.original);
+            if (engine case MultiSubjectSegmentationEngine multi) {
+              plates = await multi.subjects(source.file.path, dir.path);
+              if (plates.isEmpty) {
+                error =
+                    'No separate plates found. Select a plate to cut it out.';
+              }
+            } else {
+              output = await engine.process(
+                source.file.path,
+                p.join(dir.path, 'cutout.png'),
+              );
             }
-          } else {
-            output = await engine.process(
-              source.file.path,
-              p.join(dir.path, 'cutout.png'),
-            );
           }
         } catch (e) {
           error = e.toString();
         } finally {
           await source?.close();
+        }
+        for (final photo in m.photos.where(
+          (p) => p.job == JobStatus.queued || p.job == JobStatus.processing,
+        )) {
+          if (scope != account || !_canProcess || !active) break;
+          MediaLease? photoSource;
+          try {
+            photoSource = await media.acquire(photo.original);
+            final dir = await media.directory(m.scope, '${m.id}/${photo.id}');
+            List<Plate> found;
+            if (engine case MultiSubjectSegmentationEngine multi) {
+              found = await multi.subjects(photoSource.file.path, dir.path);
+            } else {
+              final path = await engine.process(
+                photoSource.file.path,
+                p.join(dir.path, 'cutout.png'),
+              );
+              found = [
+                Plate(
+                  id: const Uuid().v4(),
+                  mask: solidPlateMask(),
+                  path: path,
+                ),
+              ];
+            }
+            if (found.isEmpty) {
+              throw StateError('No dishes found. Try manual cleanup.');
+            }
+            extraPlates.addAll(
+              found.map(
+                (plate) => Plate.fromJson({
+                  ...plate.toJson(),
+                  'id': '${photo.id}/${plate.id}',
+                  'photoId': photo.id,
+                }),
+              ),
+            );
+            photoResults[photo.id] = (JobStatus.ready, null);
+          } catch (e) {
+            photoResults[photo.id] = (JobStatus.failed, e.toString());
+          } finally {
+            await photoSource?.close();
+          }
         }
         if (scope != account || !_canProcess) {
           await repository.mutate(m.id, m.scope, (current) {
@@ -457,10 +566,25 @@ class MorslController extends ChangeNotifier {
           }
           if (plates?.isNotEmpty == true &&
               !current.platesEdited &&
-              current.plates.isEmpty) {
-            current.plates = plates!;
+              !current.plates.any((p) => p.photoId == null)) {
+            current.plates = [...current.plates, ...plates!];
           }
-          current.job = output != null || current.plates.isNotEmpty
+          current.originalProcessed = true;
+          current.plates = [...current.plates, ...extraPlates];
+          for (final photo in current.photos) {
+            final result = photoResults[photo.id];
+            if (result != null) {
+              photo.job = result.$1;
+              photo.error = result.$2;
+            }
+          }
+          current.job = current.photos.any((p) => p.job == JobStatus.queued)
+              ? JobStatus.queued
+              : current.photos.any((p) => p.job == JobStatus.failed)
+              ? JobStatus.failed
+              : output != null ||
+                    current.cutout != null ||
+                    current.plates.isNotEmpty
               ? JobStatus.ready
               : JobStatus.failed;
           current.cutout = output ?? current.cutout;
@@ -493,6 +617,17 @@ class MorslController extends ChangeNotifier {
     await repository.mutate(m.id, m.scope, (current) {
       current.job = JobStatus.queued;
       current.error = null;
+      if (current.photos.isEmpty ||
+          (current.cutout == null &&
+              !current.plates.any((p) => p.photoId == null))) {
+        current.originalProcessed = false;
+      }
+      for (final photo in current.photos.where(
+        (p) => p.job == JobStatus.failed,
+      )) {
+        photo.job = JobStatus.queued;
+        photo.error = null;
+      }
     }, enqueue: false);
     await reload();
     await processQueue();
@@ -642,6 +777,7 @@ class MorslController extends ChangeNotifier {
               PaintingBinding.instance.imageCache.clearLiveImages();
               for (final ref in {
                 previous!.original,
+                ...previous!.photos.map((photo) => photo.original),
                 previous!.cutout,
                 previous!.thumbnail,
                 ...previous!.plates.map((plate) => plate.path),
@@ -654,6 +790,9 @@ class MorslController extends ChangeNotifier {
             if (!m.demo &&
                 (m.original.isEmpty ||
                     (MediaStore.isRemote(m.original) &&
+                        m.photos.every(
+                          (photo) => MediaStore.isRemote(photo.original),
+                        ) &&
                         m.plates.every(
                           (plate) => MediaStore.isRemote(plate.path),
                         )))) {
@@ -747,9 +886,15 @@ class MorslController extends ChangeNotifier {
             moved.thumbnail = target;
         }
       }
+      for (final photo in moved.photos) {
+        final photoDir = await media.directory(account, '${m.id}/${photo.id}');
+        final target = p.join(photoDir.path, p.basename(photo.original));
+        await File(photo.original).copy(target);
+        photo.original = target;
+      }
       moved.plates = await Future.wait(
         moved.plates.map(
-          (plate) => renderPlate(moved.original, dir.path, plate),
+          (plate) => renderPlate(moved.sourceFor(plate), dir.path, plate),
         ),
       );
       await repository.db.transaction(() async {
@@ -808,6 +953,7 @@ class MorslController extends ChangeNotifier {
     PaintingBinding.instance.imageCache.clearLiveImages();
     for (final path in {
       m.original,
+      ...m.photos.map((photo) => photo.original),
       m.cutout,
       m.thumbnail,
       ...m.plates.map((plate) => plate.path),

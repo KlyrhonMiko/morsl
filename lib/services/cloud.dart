@@ -153,6 +153,27 @@ class CloudService {
       payload.remove('cutout');
       payload.remove('thumbnail');
     }
+    if (memory.ownsMeal) {
+      payload['photos'] = await Future.wait(
+        memory.photos.map((photo) async {
+          checkAccount();
+          final json = photo.toJson();
+          if (MediaStore.isRemote(photo.original)) {
+            json['original'] = MediaStore.key(photo.original);
+          } else {
+            final bytes = await media.read(photo.original);
+            final key =
+                '${memory.id}/${memory.assetId ?? memory.id}/r2/'
+                'original-${sha256.convert(bytes)}${p.extension(photo.original).toLowerCase()}';
+            await uploadImage(key, bytes);
+            json['original'] = key;
+          }
+          return json;
+        }),
+      );
+    } else {
+      payload.remove('photos');
+    }
     payload['plates'] = await Future.wait(
       memory.plates.map((plate) async {
         checkAccount();
@@ -187,6 +208,7 @@ class CloudService {
         j['cutout'] = null;
         j['thumbnail'] = null;
         j['plates'] = [];
+        j['photos'] = [];
       }
       for (final key in ['original', 'cutout', 'thumbnail']) {
         final remote = j[key] as String?;
@@ -198,6 +220,10 @@ class CloudService {
       }
       j['scope'] = account;
       final restored = Memory.fromJson(j);
+      for (final photo in restored.photos) {
+        photo.original = MediaStore.remote(photo.original);
+        media.authorize(photo.original);
+      }
       for (final plate in restored.plates) {
         if (plate.cloudPath == null) {
           throw StateError(
@@ -207,7 +233,14 @@ class CloudService {
         plate.path = MediaStore.remote(plate.cloudPath!);
         media.authorize(plate.path);
       }
-      restored.job = restored.plates.isNotEmpty || restored.cutout != null
+      restored.job =
+          restored.photos.any(
+            (p) => p.job == JobStatus.queued || p.job == JobStatus.processing,
+          )
+          ? JobStatus.queued
+          : restored.photos.any((p) => p.job == JobStatus.failed)
+          ? JobStatus.failed
+          : restored.plates.isNotEmpty || restored.cutout != null
           ? JobStatus.ready
           : JobStatus.failed;
       result.add(restored);

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../controller.dart';
 import '../data/models.dart';
@@ -35,6 +36,15 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   bool photoChoiceEdited = false;
   bool platesDirty = false, findingPlates = false;
   String? selectedPlateId;
+  String? selectedPhotoId;
+  bool addingPhotos = false;
+  String get selectedOriginal => selectedPhotoId == null
+      ? memory.original
+      : memory.photos
+                .where((p) => p.id == selectedPhotoId)
+                .firstOrNull
+                ?.original ??
+            memory.original;
   Plate? get selectedPlate => memory.displaysCutout
       ? memory.plates.where((p) => p.id == selectedPlateId).firstOrNull ??
             memory.plates.firstOrNull
@@ -74,6 +84,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
         }
         memory.cutout = current.cutout;
         memory.original = current.original;
+        memory.photos = current.copy().photos;
+        memory.originalProcessed = current.originalProcessed;
         memory.thumbnail = current.thumbnail;
         if (current.original.isEmpty) {
           memory.plates = [];
@@ -197,7 +209,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     if (automatic && !await requestCloudCutouts(context, app)) return;
     if (!mounted) return;
     setState(() => findingPlates = true);
-    final sourceRef = memory.original;
+    final sourceRef = selectedOriginal;
+    final photoId = selectedPhotoId;
     MediaLease? source;
     await app.media.beginWork(memory.scope, memory.id);
     try {
@@ -237,10 +250,16 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           app.scope == memory.scope &&
           !unavailable) {
         final previous = memory.plates.map((p) => p.copy()).toList();
+        for (final plate in added) {
+          plate.photoId = photoId;
+        }
         final previousOriginal = memory.useOriginal;
         final generatedIds = added.map((p) => p.id).join(',');
         plateChange(() {
-          memory.plates = automatic ? added! : [...memory.plates, ...added!];
+          memory.plates = [
+            ...memory.plates.where((p) => !automatic || p.photoId != photoId),
+            ...added!,
+          ];
           selectedPlateId = added.first.id;
           photoChoiceEdited = true;
           memory.useOriginal = false;
@@ -289,7 +308,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     if (!app.canMutate || app.scope != memory.scope) return;
     final plate = selectedPlate;
     if (plate == null) return;
-    final sourceRef = memory.original;
+    final sourceRef = memory.sourceFor(plate);
     MediaLease? source;
     await app.media.beginWork(memory.scope, memory.id);
     try {
@@ -600,7 +619,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                         maxHeight:
                             memory.plates.isNotEmpty &&
                                 !findingPlates &&
-                                memory.job == JobStatus.ready
+                                memory.job != JobStatus.processing &&
+                                memory.job != JobStatus.queued
                             ? double.infinity
                             : 440,
                       ),
@@ -610,7 +630,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                         child:
                             memory.plates.isNotEmpty &&
                                 !findingPlates &&
-                                memory.job == JobStatus.ready
+                                memory.job != JobStatus.processing &&
+                                memory.job != JobStatus.queued
                             ? PlatePreviewPager(
                                 plates: memory.plates,
                                 selectedId: selectedPlate?.id,
@@ -622,7 +643,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                                     findingPlates ||
                                         memory.job == JobStatus.processing ||
                                         memory.job == JobStatus.queued
-                                    ? memory.original
+                                    ? selectedOriginal
                                     : selectedPlate?.path ??
                                           memory.cutout ??
                                           memory.original,
@@ -632,6 +653,8 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                   ),
                   const SizedBox(height: 16),
                   _plateControls(),
+                  const SizedBox(height: 16),
+                  _photoControls(),
                   const SizedBox(height: 8),
                   Center(
                     child: Text(
@@ -718,6 +741,117 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       value,
       style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
     ),
+  );
+  Future<void> _addPhotos(ImageSource source) async {
+    setState(() => addingPhotos = true);
+    try {
+      debounce?.cancel();
+      await _persist();
+      // The saved plates are now the repository's baseline for new cutouts.
+      platesDirty = false;
+      await app.addPhotos(memory, source);
+    } catch (e) {
+      if (mounted) {
+        message(context, e.toString().replaceFirst('Bad state: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => addingPhotos = false);
+    }
+  }
+
+  Widget _photoControls() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        '${memory.originals.length} ${memory.originals.length == 1 ? 'photo' : 'photos'} from this meal',
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+      const SizedBox(height: 8),
+      const SizedBox(height: 8),
+      const Text(
+        'Add every dish or angle from the same visit. Cutouts stay together.',
+        style: TextStyle(color: Palette.muted, fontSize: 12),
+      ),
+      const SizedBox(height: 10),
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (var i = 0; i < memory.originals.length; i++)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ChoiceChip(
+                  label: Text(
+                    'Photo ${i + 1}',
+                    style: TextStyle(
+                      color:
+                          selectedPhotoId ==
+                              (i == 0 ? null : memory.photos[i - 1].id)
+                          ? Colors.white
+                          : Palette.ink,
+                    ),
+                  ),
+                  selected:
+                      selectedPhotoId ==
+                      (i == 0 ? null : memory.photos[i - 1].id),
+                  onSelected: (_) => setState(() {
+                    selectedPhotoId = i == 0 ? null : memory.photos[i - 1].id;
+                  }),
+                ),
+              ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 10),
+      SizedBox(
+        height: 110,
+        width: 150,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: PlateImage(path: selectedOriginal),
+        ),
+      ),
+      for (final photo in memory.photos.where((p) => p.job == JobStatus.failed))
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            'Photo ${memory.photos.indexOf(photo) + 2}: cutouts could not be created. Select it for manual cleanup or retry.',
+            style: const TextStyle(color: Palette.terracotta, fontSize: 12),
+          ),
+        ),
+      if (memory.ownsMeal)
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            OutlinedButton.icon(
+              onPressed: addingPhotos || findingPlates
+                  ? null
+                  : () => _addPhotos(ImageSource.gallery),
+              icon: const Icon(Icons.add_photo_alternate_outlined, size: 18),
+              label: Text(addingPhotos ? 'Adding photos…' : 'Add photos'),
+            ),
+            TextButton.icon(
+              onPressed: addingPhotos || findingPlates
+                  ? null
+                  : () => _addPhotos(ImageSource.camera),
+              icon: const Icon(Icons.camera_alt_outlined, size: 18),
+              label: const Text('Take another photo'),
+            ),
+            if (memory.photos.any((p) => p.job == JobStatus.failed))
+              TextButton.icon(
+                onPressed: findingPlates || addingPhotos
+                    ? null
+                    : () async {
+                        if (!await requestCloudCutouts(context, app)) return;
+                        await app.retry(memory);
+                      },
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Retry failed photos'),
+              ),
+          ],
+        ),
+    ],
   );
   Widget _controls() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,

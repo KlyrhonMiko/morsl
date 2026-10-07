@@ -106,6 +106,13 @@ void main() {
               scope: 'remote',
               createdAt: DateTime(2026),
               original: original,
+              photos: [
+                MealPhoto(
+                  id: 'extra',
+                  original: original,
+                  job: JobStatus.ready,
+                ),
+              ],
               plates: [Plate(id: 'plate', mask: 'mask', cloudPath: plateKey)],
             ).toJson(),
           ]);
@@ -117,6 +124,7 @@ void main() {
           throw StateError('restore must not download');
       final restored = (await cloud.pull(cloud.account)).single;
       expect(restored.original, MediaStore.remote(original));
+      expect(restored.photos.single.original, MediaStore.remote(original));
       expect(restored.plates.single.path, MediaStore.remote(plateKey));
       expect(restored.job, JobStatus.ready);
       expect(requests, ['/rest/v1/rpc/restore_memories']);
@@ -134,6 +142,9 @@ void main() {
       final plateFile = await File(
         '${root.path}/plate.png',
       ).writeAsBytes([4, 5, 6]);
+      final secondFile = await File(
+        '${root.path}/second.jpg',
+      ).writeAsBytes([7, 8, 9]);
       final calls = <String>[];
       Map<String, dynamic>? saved;
       final client = SupabaseClient(
@@ -176,6 +187,13 @@ void main() {
             creator: cloud.account,
             createdAt: DateTime(2026),
             original: originalFile.path,
+            photos: [
+              MealPhoto(
+                id: 'extra',
+                original: secondFile.path,
+                job: JobStatus.ready,
+              ),
+            ],
             plates: [Plate(id: 'plate', mask: 'mask', path: plateFile.path)],
           ),
         );
@@ -183,11 +201,18 @@ void main() {
           'reserve',
           'original',
           'verified',
+          'original',
+          'verified',
           'plate',
           'verified',
           'commit',
         ]);
         expect(saved!['original'], startsWith('$id/$id/r2/original-'));
+        expect(
+          saved!['photos'][0]['original'],
+          startsWith('$id/$id/r2/original-'),
+        );
+        expect(saved!['photos'][0]['original'], isNot(saved!['original']));
         expect(saved!['plates'][0]['cloudPath'], contains('/r2/plate-'));
         expect(saved!['plates'][0].containsKey('path'), false);
         expect(await originalFile.exists(), true);
