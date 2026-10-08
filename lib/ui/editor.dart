@@ -21,6 +21,8 @@ import 'meal_photo_thumbnail.dart';
 import 'venue_field.dart';
 import 'memory_card.dart';
 import 'meal_layout_selector.dart';
+import 'media_image.dart';
+import 'plate_layout.dart' show displayPlates;
 
 class PlatingEditor extends ConsumerStatefulWidget {
   const PlatingEditor({super.key, required this.memory});
@@ -44,6 +46,39 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
   String? selectedPhotoId;
   bool addingPhotos = false;
   bool deleting = false;
+  String? _readyLayoutImages;
+  String? _loadingLayoutImages;
+  String get _layoutImagesKey =>
+      memory.plates.map((plate) => '${plate.id}:${plate.path}').join('|');
+  bool get _layoutImagesReady =>
+      memory.plates.isEmpty || _readyLayoutImages == _layoutImagesKey;
+
+  void _prepareLayoutImages() {
+    if (memory.plates.isEmpty ||
+        memory.job == JobStatus.processing ||
+        memory.job == JobStatus.queued) {
+      return;
+    }
+    final key = _layoutImagesKey;
+    if (key == _readyLayoutImages || key == _loadingLayoutImages) return;
+    _loadingLayoutImages = key;
+    final paths = memory.plates.map((plate) => plate.path).toSet();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || _loadingLayoutImages != key) return;
+      await Future.wait(
+        paths.map((path) => precacheImage(mediaImage(path), context)),
+      ).catchError((Object _) {
+        // Reveal the layout so its normal image error state can be shown.
+        return <void>[];
+      });
+      if (!mounted || _layoutImagesKey != key) return;
+      setState(() {
+        _readyLayoutImages = key;
+        _loadingLayoutImages = null;
+      });
+    });
+  }
+
   String get selectedOriginal => selectedPhotoId == null
       ? memory.original
       : memory.photos
@@ -66,6 +101,12 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     venue = TextEditingController(text: memory.venue);
     companions = TextEditingController(text: memory.companions.join(', '));
     app.addListener(_processed);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _prepareLayoutImages();
   }
 
   void _processed() {
@@ -116,6 +157,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
           memory.measuredAt = current.measuredAt;
         }
       });
+      _prepareLayoutImages();
     }
   }
 
@@ -127,6 +169,7 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
       update();
       status = 'Saving your little changes…';
     });
+    _prepareLayoutImages();
     debounce?.cancel();
     debounce = Timer(const Duration(milliseconds: 350), _persist);
   }
@@ -191,6 +234,22 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
     memory.platesEdited = true;
     update();
   });
+
+  void rotateSelectedPlate(int direction) {
+    final plateId = selectedPlate?.id;
+    if (plateId == null) return;
+    change(() {
+      if (!memory.platesEdited) {
+        // The canvas may be showing a computed arrangement rather than the
+        // saved poses. Keep that exact arrangement when the edit begins.
+        memory.plates = displayPlates(memory.plates, style: memory.plateLayout);
+      }
+      final plate = memory.plates.firstWhere((plate) => plate.id == plateId);
+      platesDirty = true;
+      memory.platesEdited = true;
+      plate.rotationSteps = (plate.rotationSteps + direction) % 8;
+    });
+  }
 
   Widget _guardPlateTool(Widget child) => AnimatedBuilder(
     animation: app,
@@ -699,10 +758,36 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                                 memory.job != JobStatus.processing &&
                                 memory.job != JobStatus.queued
                             ? showMealLayout
-                                  ? AspectRatio(
-                                      aspectRatio: .96,
-                                      child: MemoryCanvas(memory: memory),
-                                    )
+                                  ? _layoutImagesReady
+                                        ? AspectRatio(
+                                            aspectRatio: .96,
+                                            child: MemoryCanvas(memory: memory),
+                                          )
+                                        : Stack(
+                                            children: [
+                                              AspectRatio(
+                                                aspectRatio: .96,
+                                                child: PlateImage(
+                                                  path: selectedOriginal,
+                                                ),
+                                              ),
+                                              const Positioned(
+                                                left: 12,
+                                                right: 12,
+                                                bottom: 12,
+                                                child: Card(
+                                                  child: Padding(
+                                                    padding: EdgeInsets.all(12),
+                                                    child: Text(
+                                                      'Loading your plate layout…',
+                                                      textAlign:
+                                                          TextAlign.center,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          )
                                   : PlatePreviewPager(
                                       plates: memory.plates,
                                       selectedId: selectedPlate?.id,
@@ -1176,6 +1261,16 @@ class _PlatingEditorState extends ConsumerState<PlatingEditor> {
                 label: const Text('Retry cutouts'),
               ),
             if (selectedPlate != null) ...[
+              OutlinedButton.icon(
+                onPressed: findingPlates ? null : () => rotateSelectedPlate(-1),
+                icon: const Icon(Icons.rotate_left_rounded, size: 18),
+                label: const Text('Rotate left 45°'),
+              ),
+              OutlinedButton.icon(
+                onPressed: findingPlates ? null : () => rotateSelectedPlate(1),
+                icon: const Icon(Icons.rotate_right_rounded, size: 18),
+                label: const Text('Rotate right 45°'),
+              ),
               OutlinedButton.icon(
                 onPressed: findingPlates ? null : editPlate,
                 icon: const Icon(Icons.brush_outlined, size: 18),

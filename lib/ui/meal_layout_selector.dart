@@ -8,7 +8,7 @@ import 'theme.dart';
 const mealLayoutStyles = [
   ('editorial', 'Editorial', 'A leading dish, layered with smaller accents.'),
   ('scrapbook', 'Scrapbook', 'Playful angles and a closely gathered collage.'),
-  ('clean', 'Clean spread', 'Even spacing, upright dishes, room to breathe.'),
+  ('clean', 'Clean spread', 'Even spacing, aligned dishes, room to breathe.'),
 ];
 
 class MealLayoutSelector extends StatelessWidget {

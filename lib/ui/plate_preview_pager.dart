@@ -90,7 +90,11 @@ class _PlatePreviewPagerState extends State<PlatePreviewPager> {
             image: true,
             child: Padding(
               padding: const EdgeInsets.all(8),
-              child: PlateImage(path: widget.plates[value].path),
+              child: PlateImage(
+                path: widget.plates[value].path,
+                aspect: widget.plates[value].aspect,
+                rotationSteps: widget.plates[value].rotationSteps,
+              ),
             ),
           ),
         ),

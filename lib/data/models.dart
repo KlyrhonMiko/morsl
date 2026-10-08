@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 enum JobStatus { queued, processing, ready, failed }
 
@@ -20,12 +21,23 @@ class Plate {
     this.y = .15,
     this.scale = .6,
     this.rotation = 0,
+    this.rotationSteps = 0,
   });
   final String id;
   String mask, path;
   String? cloudPath;
   String? photoId;
   double left, top, width, height, aspect, x, y, scale, rotation;
+
+  /// Clockwise orientation in 45-degree steps, separate from layout rotation.
+  int rotationSteps;
+  double get orientationRadians => rotationSteps * math.pi / 4;
+  double get orientedAspect {
+    final cosine = math.cos(orientationRadians).abs();
+    final sine = math.sin(orientationRadians).abs();
+    return (aspect * cosine + sine) / (aspect * sine + cosine);
+  }
+
   Map<String, dynamic> toJson({bool local = true}) => {
     'id': id,
     'mask': mask,
@@ -41,6 +53,7 @@ class Plate {
     'y': y,
     'scale': scale,
     'rotation': rotation,
+    'rotationSteps': rotationSteps,
   };
   Plate copy() => Plate.fromJson(toJson());
   factory Plate.fromJson(Map<String, dynamic> j) => Plate(
@@ -58,6 +71,9 @@ class Plate {
     y: (j['y'] as num?)?.toDouble() ?? .15,
     scale: (j['scale'] as num?)?.toDouble() ?? .6,
     rotation: (j['rotation'] as num?)?.toDouble() ?? 0,
+    rotationSteps:
+        (j['rotationSteps'] as num?)?.toInt() ??
+        ((j['quarterTurns'] as num?)?.toInt() ?? 0) * 2,
   );
 }
 
@@ -304,6 +320,10 @@ class LibraryPlate {
   final Memory memory;
   final String plateId, path;
   String get key => '${memory.id}/$plateId';
+  Plate? get sourcePlate =>
+      memory.plates.where((plate) => plate.id == plateId).firstOrNull;
+  int get rotationSteps => sourcePlate?.rotationSteps ?? 0;
+  double get aspect => sourcePlate?.aspect ?? 1;
   PlateReview get review => memory.plateReviews[plateId] ?? const PlateReview();
   String get title => review.name.isNotEmpty
       ? review.name

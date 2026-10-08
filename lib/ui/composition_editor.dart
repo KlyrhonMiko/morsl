@@ -317,7 +317,11 @@ class _CompositionEditorState extends State<CompositionEditor> {
                                                         details.rotation)
                                                     .clamp(-math.pi, math.pi);
                                           }),
-                                    child: PlateImage(path: entry.path),
+                                    child: PlateImage(
+                                      path: entry.path,
+                                      aspect: entry.aspect,
+                                      rotationSteps: entry.rotationSteps,
+                                    ),
                                   ),
                                 ),
                               ),

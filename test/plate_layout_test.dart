@@ -13,6 +13,120 @@ import 'package:morsl/ui/plate_layout.dart';
 import 'package:morsl/ui/theme.dart';
 
 void main() {
+  test(
+    'auto layouts and overlap order do not depend on photo selection order',
+    () {
+      for (final style in ['editorial', 'scrapbook', 'clean']) {
+        for (final count in [1, 2, 3, 4, 5, 6, 7, 12]) {
+          final originals = List.generate(
+            count,
+            (i) => Plate(
+              id: 'dish-$i',
+              mask: 'silhouette-$i',
+              photoId: 'photo-$i',
+              aspect: const [1.4, .62, .95, .48, .60, .42][i % 6],
+              rotationSteps: i == 1 ? 2 : 0,
+            ),
+          );
+          final expected = originals.map((p) => p.copy()).toList();
+          arrangePlates(expected, style: style);
+          final random = math.Random(42);
+          for (var attempt = 0; attempt < 20; attempt++) {
+            final shuffled = originals.map((p) => p.copy()).toList()
+              ..shuffle(random);
+            arrangePlates(shuffled, style: style);
+            expect(
+              shuffled.map((p) => p.toJson()).toList(),
+              expected.map((p) => p.toJson()).toList(),
+              reason: '$style: $count dishes, shuffle $attempt',
+            );
+            // Running the arranger again must not drift or change layering.
+            arrangePlates(shuffled, style: style);
+            expect(
+              shuffled.map((p) => p.toJson()).toList(),
+              expected.map((p) => p.toJson()).toList(),
+            );
+          }
+        }
+      }
+    },
+  );
+
+  test('scrapbook assigns broad and round dishes to its anchors', () {
+    final plates = [
+      Plate(id: 'narrow', mask: '', aspect: .4),
+      Plate(id: 'side', mask: '', aspect: .55),
+      Plate(id: 'medium', mask: '', aspect: .8),
+      Plate(id: 'portrait', mask: '', aspect: .72),
+      Plate(id: 'round', mask: '', aspect: 1.0),
+      Plate(id: 'broad', mask: '', aspect: 1.35),
+    ];
+    arrangePlates(plates, style: 'scrapbook');
+    expect(plates.first.id, 'broad');
+    expect(plates[2].id, 'round');
+    expect(plates.last.id, 'narrow');
+  });
+
+  test('painting a saved auto layout does not reassign rotated plates', () {
+    for (final style in ['', 'editorial', 'scrapbook', 'clean']) {
+      final plates = [
+        Plate(id: 'broad', mask: '', aspect: 1.4),
+        Plate(id: 'round', mask: '', aspect: 1),
+        Plate(id: 'narrow', mask: '', aspect: .45),
+      ];
+      arrangePlates(plates, style: style.isEmpty ? 'editorial' : style);
+      plates.first.rotationSteps = 2;
+      final saved = plates.map((plate) => plate.toJson()).toList();
+      expect(identical(displayPlates(plates, style: style), plates), isTrue);
+      expect(plates.map((plate) => plate.toJson()).toList(), saved);
+    }
+  });
+
+  test(
+    'returning to Editorial restores its original poses after cutout turns',
+    () {
+      final plates = [
+        Plate(id: 'dessert', mask: '', aspect: 1.4),
+        Plate(id: 'roast', mask: '', aspect: .7),
+        Plate(id: 'bowl', mask: '', aspect: 1),
+        Plate(id: 'fries', mask: '', aspect: .6),
+        Plate(id: 'salad', mask: '', aspect: .5),
+        Plate(id: 'chips', mask: '', aspect: .45),
+      ];
+      arrangePlates(plates, style: 'editorial');
+      final original = plates.map((plate) => plate.copy()).toList();
+      plates.firstWhere((plate) => plate.id == 'roast').rotationSteps = 2;
+      plates.firstWhere((plate) => plate.id == 'chips').rotationSteps = 1;
+      arrangePlates(plates, style: 'scrapbook');
+      arrangePlates(plates, style: 'editorial');
+      for (var i = 0; i < plates.length; i++) {
+        expect(plates[i].id, original[i].id);
+        expect(plates[i].x, closeTo(original[i].x, .00001));
+        expect(plates[i].y, closeTo(original[i].y, .00001));
+        expect(plates[i].scale, closeTo(original[i].scale, .00001));
+        expect(plates[i].rotation, closeTo(original[i].rotation, .00001));
+      }
+    },
+  );
+
+  test(
+    '45-degree orientation is saved and older 90-degree turns still load',
+    () {
+      final plate = Plate(id: 'dish', mask: '', aspect: .55, rotationSteps: 1);
+      expect(plate.orientedAspect, closeTo(1, .0001));
+      expect(Plate.fromJson(plate.toJson()).rotationSteps, 1);
+
+      final legacy = Plate.fromJson({
+        'id': 'older-dish',
+        'mask': '',
+        'aspect': .55,
+        'quarterTurns': 1,
+      });
+      expect(legacy.rotationSteps, 2);
+      expect(legacy.orientedAspect, closeTo(1 / .55, .0001));
+    },
+  );
+
   test('six independently arranged photos become one meal collage', () {
     final plates = List.generate(6, (i) {
       final group = [
@@ -59,41 +173,48 @@ void main() {
 
   test('collage keeps rotated dishes between date and caption', () {
     for (final style in ['editorial', 'scrapbook', 'clean']) {
-      for (var count = 1; count <= 15; count++) {
-        final plates = List.generate(
-          count,
-          (i) => Plate(id: '$i', mask: '', aspect: const [.7, 1.0, 2.0][i % 3]),
-        );
-        arrangePlates(plates, style: style);
-        final bounds = plates.map((p) {
-          final cos = math.cos(p.rotation).abs();
-          final sin = math.sin(p.rotation).abs();
-          return Rect.fromCenter(
-            center: Offset(
-              p.x + p.scale / 2,
-              p.y + p.scale * .96 / p.aspect / 2,
-            ),
-            width: p.scale * (cos + sin / p.aspect),
-            height: p.scale * .96 * (sin + cos / p.aspect),
+      for (final aspects in const [
+        [.7, 1.0, 2.0],
+        [1.4, .62, .95, .48, .60, .42],
+      ]) {
+        for (var count = 1; count <= 15; count++) {
+          final plates = List.generate(
+            count,
+            (i) =>
+                Plate(id: '$i', mask: '', aspect: aspects[i % aspects.length]),
           );
-        }).toList();
-        for (var i = 0; i < bounds.length; i++) {
-          expect(bounds[i].left, greaterThanOrEqualTo(.05999));
-          expect(bounds[i].right, lessThanOrEqualTo(.94001));
-          expect(bounds[i].top, greaterThanOrEqualTo(.11999));
-          expect(bounds[i].bottom, lessThanOrEqualTo(.80001));
-          for (var j = i + 1; j < bounds.length; j++) {
-            final overlap = bounds[i].intersect(bounds[j]);
-            if (!overlap.isEmpty) {
-              final smaller = math.min(
-                bounds[i].width * bounds[i].height,
-                bounds[j].width * bounds[j].height,
-              );
-              expect(
-                overlap.width * overlap.height / smaller,
-                lessThan(.5),
-                reason: '$style: $count dishes: $i and $j remain recognizable',
-              );
+          arrangePlates(plates, style: style);
+          final bounds = plates.map((p) {
+            final cos = math.cos(p.rotation).abs();
+            final sin = math.sin(p.rotation).abs();
+            return Rect.fromCenter(
+              center: Offset(
+                p.x + p.scale / 2,
+                p.y + p.scale * .96 / p.aspect / 2,
+              ),
+              width: p.scale * (cos + sin / p.aspect),
+              height: p.scale * .96 * (sin + cos / p.aspect),
+            );
+          }).toList();
+          for (var i = 0; i < bounds.length; i++) {
+            expect(bounds[i].left, greaterThanOrEqualTo(.05999));
+            expect(bounds[i].right, lessThanOrEqualTo(.94001));
+            expect(bounds[i].top, greaterThanOrEqualTo(.11999));
+            expect(bounds[i].bottom, lessThanOrEqualTo(.80001));
+            for (var j = i + 1; j < bounds.length; j++) {
+              final overlap = bounds[i].intersect(bounds[j]);
+              if (!overlap.isEmpty) {
+                final smaller = math.min(
+                  bounds[i].width * bounds[i].height,
+                  bounds[j].width * bounds[j].height,
+                );
+                expect(
+                  overlap.width * overlap.height / smaller,
+                  lessThan(.5),
+                  reason:
+                      '$style: $count dishes: $i and $j remain recognizable',
+                );
+              }
             }
           }
         }

@@ -4,6 +4,10 @@ import '../data/models.dart';
 
 /// Compose silhouettes as a compact spread, with balanced visual weight.
 void arrangePlates(List<Plate> plates, {String style = 'editorial'}) {
+  if (plates.isEmpty) return;
+  // Assign both positions and paint order before composing. Source photos keep
+  // their own order; cutouts use stable, shape-appropriate composition roles.
+  plates.setAll(0, _assignRoles(plates, style));
   if (style == 'clean') {
     _cleanSpread(plates);
     return;
@@ -13,7 +17,7 @@ void arrangePlates(List<Plate> plates, {String style = 'editorial'}) {
     return;
   }
   if (plates.isEmpty || plates.length > 6) {
-    _scatteredArrangement(plates);
+    _scatteredArrangement(plates, orientPortraits: true);
     return;
   }
   // Follow an irregular path around a central anchor, without row baselines.
@@ -24,12 +28,12 @@ void arrangePlates(List<Plate> plates, {String style = 'editorial'}) {
     4 => [(.29, .30), (.67, .32), (.37, .56), (.73, .61)],
     5 => [(.31, .28), (.70, .30), (.49, .46), (.24, .63), (.72, .65)],
     _ => [
-      (.30, .30),
-      (.67, .27),
-      (.49, .45),
-      (.22, .59),
-      (.58, .66),
-      (.79, .53),
+      (.30, .29),
+      (.66, .275),
+      (.48, .445),
+      (.245, .565),
+      (.555, .625),
+      (.775, .535),
     ],
   };
   for (var i = 0; i < plates.length; i++) {
@@ -37,7 +41,7 @@ void arrangePlates(List<Plate> plates, {String style = 'editorial'}) {
     final aspect = plate.aspect.isFinite && plate.aspect > 0
         ? plate.aspect
         : 1.0;
-    final angle = const [-.22, .19, -.11, .16, -.20, .14][i];
+    final angle = _dishAngle(aspect, i, scrapbook: true);
     final cos = math.cos(angle).abs(), sin = math.sin(angle).abs();
     final rw = cos + sin / aspect;
     final rh = .96 * (sin + cos / aspect);
@@ -53,12 +57,83 @@ void arrangePlates(List<Plate> plates, {String style = 'editorial'}) {
     );
     final (cx, cy) = centers[i];
     final x = cx.clamp(.06 + scale * rw / 2, .94 - scale * rw / 2);
-    final y = cy.clamp(.12 + scale * rh / 2, .80 - scale * rh / 2);
+    // Leave breathing room between the lower silhouettes and the caption.
+    final y = cy.clamp(.12 + scale * rh / 2, .765 - scale * rh / 2);
     plate.scale = scale;
     plate.x = x - scale / 2;
     plate.y = y - scale * .96 / aspect / 2;
     plate.rotation = angle;
   }
+}
+
+List<Plate> _assignRoles(List<Plate> plates, String style) {
+  double aspect(Plate p) => p.aspect.isFinite && p.aspect > 0 ? p.aspect : 1.0;
+  final candidates = List<Plate>.of(plates)
+    ..sort((a, b) {
+      final shape = aspect(a).compareTo(aspect(b));
+      if (shape != 0) return shape;
+      // Masks are independent of upload order and local/cloud file locations.
+      final silhouette = a.mask.compareTo(b.mask);
+      return silhouette != 0 ? silhouette : a.id.compareTo(b.id);
+    });
+  if (plates.length > 6 || style == 'clean') return candidates;
+
+  // Target source shapes for each visual role: broad lead, round anchor,
+  // and elongated supporting dishes. These are not food classifications.
+  final targets = switch (plates.length) {
+    1 => [1.0],
+    2 => [1.15, .60],
+    3 => [1.25, .65, 1.0],
+    4 => [1.25, .65, .55, 1.0],
+    5 => [1.30, .70, 1.0, .50, .65],
+    _ => [1.35, .72, 1.0, .55, .80, .40],
+  };
+  // Find the best overall assignment (at most 64 subsets), rather than giving
+  // an early photo first choice and forcing later photos into unsuitable slots.
+  final full = (1 << candidates.length) - 1;
+  final costs = <int, double>{full: 0};
+  final choices = <int, int>{};
+  double solve(int used, int slot) {
+    final cached = costs[used];
+    if (cached != null) return cached;
+    var best = double.infinity;
+    for (var i = 0; i < candidates.length; i++) {
+      if (used & (1 << i) != 0) continue;
+      final mismatch = math.log(aspect(candidates[i]) / targets[slot]);
+      final weight = slot == 0 || (slot == 2 && style == 'scrapbook')
+          ? 1.4
+          : 1.0;
+      final cost =
+          mismatch * mismatch * weight + solve(used | (1 << i), slot + 1);
+      if (cost < best - 1e-10) {
+        best = cost;
+        choices[used] = i;
+      }
+    }
+    return costs[used] = best;
+  }
+
+  solve(0, 0);
+  var used = 0;
+  return List.generate(candidates.length, (_) {
+    final choice = choices[used]!;
+    used |= 1 << choice;
+    return candidates[choice];
+  });
+}
+
+double _dishAngle(double aspect, int index, {bool scrapbook = false}) {
+  final slot = index % 6;
+  final subtle = scrapbook
+      ? const [-.18, .23, -.10, .12, -.40, .08][slot]
+      : const [-.10, .18, -.12, .06, -.32, .14][slot];
+  // Turn the long axis of portrait dishes into alternating diagonals. Blend
+  // toward the existing small tilt for round dishes, avoiding a threshold jump.
+  final portrait = ((.95 - aspect) / .30).clamp(0.0, 1.0);
+  final diagonal = scrapbook
+      ? const [1.20, -.58, .82, 1.42, -.26, .88][slot]
+      : const [1.05, -.48, .72, 1.32, -.20, .78][slot];
+  return subtle + (diagonal - subtle) * portrait;
 }
 
 void _cleanSpread(List<Plate> plates) {
@@ -77,17 +152,20 @@ void _cleanSpread(List<Plate> plates) {
     final inRow = math.min(columns, plates.length - i ~/ columns * columns);
     final cx = .5 + (i % columns - (inRow - 1) / 2) * cellWidth;
     final cy = .15 + (i ~/ columns + .5) * cellHeight;
-    final scale = math.min(cellWidth * .92, cellHeight * .90 * aspect / .96);
+    final angle = aspect < .8 ? math.pi / 2 : 0.0;
+    final cos = math.cos(angle).abs(), sin = math.sin(angle).abs();
+    final rw = cos + sin / aspect, rh = .96 * (sin + cos / aspect);
+    final scale = math.min(cellWidth * .92 / rw, cellHeight * .90 / rh);
     p.scale = scale;
     p.x = cx - scale / 2;
     p.y = cy - scale * .96 / aspect / 2;
-    p.rotation = 0;
+    p.rotation = angle;
   }
 }
 
 void _editorialSpread(List<Plate> plates) {
   if (plates.length < 4 || plates.length > 6) {
-    _scatteredArrangement(plates);
+    _scatteredArrangement(plates, orientPortraits: true);
     return;
   }
   // One leading dish and a second anchor, connected by smaller accents.
@@ -106,24 +184,24 @@ void _editorialSpread(List<Plate> plates) {
       (.53, .62, .44, .31),
     ],
     _ => [
-      (.31, .30, .50, .37),
-      (.73, .25, .31, .25),
-      (.72, .47, .38, .30),
-      (.19, .59, .28, .29),
-      (.48, .63, .42, .31),
-      (.80, .69, .26, .20),
+      (.345, .32, .43, .33),
+      (.665, .265, .33, .29),
+      (.605, .475, .39, .31),
+      (.255, .555, .30, .31),
+      (.49, .625, .36, .28),
+      (.785, .60, .31, .32),
     ],
   };
   for (var i = 0; i < plates.length; i++) {
     final p = plates[i];
     final aspect = p.aspect.isFinite && p.aspect > 0 ? p.aspect : 1.0;
-    final angle = const [-.06, .08, -.10, .07, -.05, .10][i];
+    final angle = _dishAngle(aspect, i);
     final cos = math.cos(angle).abs(), sin = math.sin(angle).abs();
     final rw = cos + sin / aspect, rh = .96 * (sin + cos / aspect);
     final (cx, cy, width, height) = poses[i];
     final scale = math.min(width / rw, height / rh);
     final x = cx.clamp(.06 + scale * rw / 2, .94 - scale * rw / 2);
-    final y = cy.clamp(.12 + scale * rh / 2, .80 - scale * rh / 2);
+    final y = cy.clamp(.12 + scale * rh / 2, .765 - scale * rh / 2);
     p.scale = scale;
     p.x = x - scale / 2;
     p.y = y - scale * .96 / aspect / 2;
@@ -132,7 +210,7 @@ void _editorialSpread(List<Plate> plates) {
 }
 
 // Recognize the former fixed-slot collage so existing automatic meals upgrade.
-void _scatteredArrangement(List<Plate> plates) {
+void _scatteredArrangement(List<Plate> plates, {bool orientPortraits = false}) {
   if (plates.isEmpty) return;
   final poses = switch (plates.length) {
     1 => [(.50, .42, .76, .60)],
@@ -172,10 +250,12 @@ void _scatteredArrangement(List<Plate> plates) {
             .32,
             .58 / rows * 1.08,
           );
-    final angle = const [-.13, .15, -.18, .09, -.07, .17][i % 6];
     final aspect = plate.aspect.isFinite && plate.aspect > 0
         ? plate.aspect
         : 1.0;
+    final angle = orientPortraits
+        ? _dishAngle(aspect, i)
+        : const [-.13, .15, -.18, .09, -.07, .17][i % 6];
     final cos = math.cos(angle).abs(), sin = math.sin(angle).abs();
     final scale = math.min(
       width / (cos + sin / aspect),
@@ -259,10 +339,11 @@ List<Plate> displayPlates(
 }) {
   if (edited) return plates;
   if (style.isNotEmpty) {
-    final arranged = plates.map((p) => p.copy()).toList();
-    arrangePlates(arranged, style: style);
-    return arranged;
+    // Style selection and cutout processing already save the arrangement.
+    // Recomputing it while painting would move other dishes after a turn.
+    return plates;
   }
+  if (plates.any((plate) => plate.rotationSteps != 0)) return plates;
   if (plates.length > 1) {
     final groups = <String?, List<Plate>>{};
     for (final plate in plates) {

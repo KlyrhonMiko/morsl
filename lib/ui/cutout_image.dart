@@ -6,6 +6,49 @@ import 'package:flutter/material.dart';
 import 'media_image.dart';
 import 'theme.dart';
 
+/// Fits a cutout and its rotated bounds inside the available space.
+class OrientedCutoutImage extends StatelessWidget {
+  const OrientedCutoutImage({
+    super.key,
+    required this.path,
+    required this.aspect,
+    required this.rotationSteps,
+    this.cacheWidth,
+  });
+
+  final String path;
+  final double aspect;
+  final int rotationSteps;
+  final int? cacheWidth;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      if (!constraints.hasBoundedWidth || !constraints.hasBoundedHeight) {
+        return CutoutImage(path: path, cacheWidth: cacheWidth);
+      }
+      final ratio = aspect.isFinite && aspect > 0 ? aspect : 1.0;
+      final angle = rotationSteps * math.pi / 4;
+      final cosine = math.cos(angle).abs();
+      final sine = math.sin(angle).abs();
+      final height = math.min(
+        constraints.maxWidth / (ratio * cosine + sine),
+        constraints.maxHeight / (ratio * sine + cosine),
+      );
+      return Center(
+        child: Transform.rotate(
+          angle: angle,
+          child: SizedBox(
+            width: ratio * height,
+            height: height,
+            child: CutoutImage(path: path, cacheWidth: cacheWidth),
+          ),
+        ),
+      );
+    },
+  );
+}
+
 /// A paper-thin rim and contact shadow derived from the photo's alpha.
 /// Straight cropped edges receive the same finish as curved plate edges.
 class CutoutImage extends StatefulWidget {

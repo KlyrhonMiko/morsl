@@ -331,7 +331,11 @@ class PlateTile extends StatelessWidget {
                   Positioned.fill(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
-                      child: PlateImage(path: plate.path),
+                      child: PlateImage(
+                        path: plate.path,
+                        aspect: plate.aspect,
+                        rotationSteps: plate.rotationSteps,
+                      ),
                     ),
                   ),
                   if (selecting)
@@ -402,10 +406,21 @@ class PlateTile extends StatelessWidget {
 }
 
 class PlateImage extends StatelessWidget {
-  const PlateImage({super.key, required this.path});
+  const PlateImage({
+    super.key,
+    required this.path,
+    this.aspect = 1,
+    this.rotationSteps = 0,
+  });
   final String path;
+  final double aspect;
+  final int rotationSteps;
   @override
-  Widget build(BuildContext context) => CutoutImage(path: path);
+  Widget build(BuildContext context) => OrientedCutoutImage(
+    path: path,
+    aspect: aspect,
+    rotationSteps: rotationSteps,
+  );
 }
 
 class PlateDetails extends StatefulWidget {
@@ -575,7 +590,11 @@ class _PlateDetailsState extends State<PlateDetails> {
                 SizedBox(
                   height: 260,
                   width: double.infinity,
-                  child: PlateImage(path: widget.plate.path),
+                  child: PlateImage(
+                    path: widget.plate.path,
+                    aspect: widget.plate.aspect,
+                    rotationSteps: widget.plate.rotationSteps,
+                  ),
                 ),
                 const SizedBox(height: 20),
                 Text(

@@ -269,7 +269,11 @@ void main() {
         expect(plate.path, processed.sourceFor(plate));
       }
       expect(
-        processed.copy().sourceFor(processed.plates.last),
+        processed.copy().sourceFor(
+          processed.plates.firstWhere(
+            (p) => p.photoId == processed.photos.single.id,
+          ),
+        ),
         processed.photos.single.original,
       );
       app.dispose();

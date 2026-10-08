@@ -20,6 +20,7 @@ import 'package:morsl/services/media.dart';
 import 'package:morsl/services/plates.dart';
 import 'package:morsl/services/reminders.dart';
 import 'package:morsl/ui/editor.dart';
+import 'package:morsl/ui/plate_layout.dart';
 import 'package:morsl/ui/plate_library.dart';
 import 'package:morsl/ui/composition_editor.dart';
 import 'package:morsl/services/creations.dart';
@@ -667,6 +668,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Plate cutouts'));
+    await tester.pumpAndSettle();
     expect(find.text('Plate 1 of 2'), findsOneWidget);
     await tester.drag(
       find.byKey(const ValueKey('plate-preview-pages')),
@@ -692,6 +695,126 @@ void main() {
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     });
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('rotating a selected plate saves its orientation', (
+    tester,
+  ) async {
+    final memory = app.memories.first.copy()
+      ..plates = [
+        Plate(
+          id: 'vertical',
+          mask: solidPlateMask(),
+          path: app.memories.first.cutout!,
+          aspect: .55,
+        ),
+        Plate(
+          id: 'neighbour',
+          mask: solidPlateMask(),
+          path: app.memories.first.cutout!,
+          x: .68,
+          y: .43,
+          scale: .23,
+          rotation: .18,
+        ),
+      ]
+      ..useOriginal = false;
+    await tester.runAsync(() => app.repository.save(memory));
+    await tester.pumpWidget(
+      host(
+        MaterialApp(
+          theme: morslTheme(),
+          home: PlatingEditor(memory: memory),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Plate cutouts'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Rotate right 45°'));
+    await tester.tap(find.text('Rotate right 45°'));
+    await tester.pump();
+    expect(
+      tester
+          .widgetList<PlateImage>(find.byType(PlateImage))
+          .any((image) => image.rotationSteps == 1),
+      isTrue,
+    );
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 150)),
+    );
+    await tester.pumpAndSettle();
+    final saved = (await tester.runAsync(
+      () => app.repository.list('guest'),
+    ))!.single;
+    expect(saved.plates.first.rotationSteps, 1);
+    expect(saved.plates.first.orientedAspect, closeTo(1, .0001));
+    expect(saved.plates.last.x, .68);
+    expect(saved.plates.last.y, .43);
+    expect(saved.plates.last.scale, .23);
+    expect(saved.plates.last.rotation, .18);
+    expect(saved.platesEdited, isTrue);
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('rotating a cutout leaves the meal layout unchanged', (
+    tester,
+  ) async {
+    final path = app.memories.first.cutout!;
+    final memory = app.memories.first.copy()
+      ..plates = [
+        Plate(id: 'lead', mask: solidPlateMask(), path: path, aspect: 1.3),
+        Plate(id: 'side', mask: solidPlateMask(), path: path, aspect: .55),
+        Plate(id: 'round', mask: solidPlateMask(), path: path, aspect: 1),
+      ]
+      ..plateLayout = 'editorial'
+      ..useOriginal = false;
+    arrangePlates(memory.plates, style: memory.plateLayout);
+    final visible = displayPlates(memory.plates, style: memory.plateLayout);
+    await tester.runAsync(() => app.repository.save(memory));
+    await tester.pumpWidget(
+      host(
+        MaterialApp(
+          theme: morslTheme(),
+          home: PlatingEditor(memory: memory),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Plate cutouts'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Rotate right 45°'));
+    await tester.tap(find.text('Rotate right 45°'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rotate right 45°'));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 150)),
+    );
+    await tester.pumpAndSettle();
+    final saved = (await tester.runAsync(
+      () => app.repository.list('guest'),
+    ))!.single;
+    expect(saved.platesEdited, isTrue);
+    expect(saved.plateLayout, 'editorial');
+    expect(
+      saved.plates.map((plate) => plate.id),
+      visible.map((plate) => plate.id),
+    );
+    for (final before in visible) {
+      final after = saved.plates.singleWhere((plate) => plate.id == before.id);
+      expect(after.x, closeTo(before.x, .00001));
+      expect(after.y, closeTo(before.y, .00001));
+      expect(after.scale, closeTo(before.scale, .00001));
+      expect(after.rotation, closeTo(before.rotation, .00001));
+      if (before.id == 'lead') {
+        expect(after.rotationSteps, 2);
+      } else {
+        expect(after.rotationSteps, before.rotationSteps);
+      }
+    }
+    await tester.pumpWidget(const SizedBox());
     expect(tester.takeException(), isNull);
   });
   testWidgets(
@@ -725,6 +848,8 @@ void main() {
           ),
         ),
       );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Plate cutouts'));
       await tester.pumpAndSettle();
       expect(find.text('Clean up edges'), findsOneWidget);
       expect(find.text('Add a missed plate'), findsOneWidget);
